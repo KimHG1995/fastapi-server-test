@@ -1,12 +1,12 @@
 from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Request
-from fastapi.testclient import TestClient
+from httpx import ASGITransport, AsyncClient
 
 from app.core.responses import build_page_response, build_response
 
 
-def test_build_response_uses_the_request_trace_id() -> None:
+async def test_build_response_uses_the_request_trace_id() -> None:
     app = FastAPI()
     trace_id = UUID("11111111-1111-4111-8111-111111111111")
 
@@ -15,14 +15,14 @@ def test_build_response_uses_the_request_trace_id() -> None:
         request.state.trace_id = trace_id
         return build_response(request, {"status": "ok"})
 
-    with TestClient(app) as client:
-        result = client.get("/")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        result = await client.get("/")
 
     assert result.status_code == 200
     assert result.json()["meta"]["trace_id"] == str(trace_id)
 
 
-def test_build_page_response_calculates_page_metadata() -> None:
+async def test_build_page_response_calculates_page_metadata() -> None:
     app = FastAPI()
     trace_id = uuid4()
 
@@ -37,8 +37,8 @@ def test_build_page_response_calculates_page_metadata() -> None:
             total=5,
         )
 
-    with TestClient(app) as client:
-        response = client.get("/")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/")
 
     assert response.status_code == 200
     body = response.json()
@@ -55,7 +55,7 @@ def test_build_page_response_calculates_page_metadata() -> None:
     }
 
 
-def test_build_page_response_uses_zero_total_pages_for_empty_results() -> None:
+async def test_build_page_response_uses_zero_total_pages_for_empty_results() -> None:
     app = FastAPI()
 
     @app.get("/")
@@ -63,8 +63,8 @@ def test_build_page_response_uses_zero_total_pages_for_empty_results() -> None:
         request.state.trace_id = uuid4()
         return build_page_response(request, items=[], page=1, page_size=10, total=0)
 
-    with TestClient(app) as client:
-        response = client.get("/")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/")
 
     assert response.status_code == 200
     assert response.json()["meta"]["total_pages"] == 0

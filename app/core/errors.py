@@ -1,6 +1,6 @@
 from collections.abc import Mapping
 from http import HTTPStatus
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 import structlog
@@ -47,6 +47,21 @@ class AppError(Exception):
         self.headers = headers
 
 
+def problem_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
+    return {
+        status_code: {
+            "description": HTTPStatus(status_code).phrase,
+            "model": ProblemDetail,
+            "content": {
+                "application/problem+json": {
+                    "schema": {"$ref": "#/components/schemas/ProblemDetail"}
+                }
+            },
+        }
+        for status_code in status_codes
+    }
+
+
 def _trace_id(request: Request) -> UUID:
     return cast(UUID, request.state.trace_id)
 
@@ -62,6 +77,8 @@ def _problem_response(
     errors: list[ProblemField] | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
+    response_headers = dict(headers or {})
+    response_headers.setdefault("x-request-id", str(_trace_id(request)))
     problem = ProblemDetail(
         type=f"https://example.com/problems/{type_slug}",
         title=title,
@@ -75,7 +92,7 @@ def _problem_response(
     return JSONResponse(
         status_code=status_code,
         content=problem.model_dump(mode="json"),
-        headers=headers,
+        headers=response_headers,
         media_type="application/problem+json",
     )
 
@@ -118,7 +135,10 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(HTTPException)
     async def handle_http_exception(request: Request, exc: HTTPException) -> JSONResponse:
-        title = HTTPStatus(exc.status_code).phrase
+        try:
+            title = HTTPStatus(exc.status_code).phrase
+        except ValueError:
+            title = "HTTP Error"
         detail = exc.detail if isinstance(exc.detail, str) else title
         return _problem_response(
             request,
@@ -144,7 +164,7 @@ def register_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        logger = structlog.get_logger(__name__)
+        logger = structlog.get_logger(__name__).bind(trace_id=str(_trace_id(request)))
         logger.exception("unexpected_error")
         is_production = request.app.state.settings.app_env == "production"
         detail = "An unexpected error occurred." if is_production else str(exc)
