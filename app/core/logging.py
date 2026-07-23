@@ -15,8 +15,8 @@ SENSITIVE_VALUE_PATTERN = re.compile(
     r"(?P<separator>\s*[=:]\s*)(?P<value>[^\s,;]+)",
     re.IGNORECASE,
 )
-DATABASE_URL_CREDENTIALS_PATTERN = re.compile(
-    r"(?P<scheme>[a-z][a-z0-9+.-]*://)[^@\s/]+@", re.IGNORECASE
+DATABASE_URL_PATTERN = re.compile(
+    r"\b(?:postgres|postgresql)(?:\+[a-z0-9_-]+)?://[^\s,;]+", re.IGNORECASE
 )
 
 
@@ -33,7 +33,7 @@ def _redact_value(value: object, key: str | None = None) -> object:
     if key is not None and SENSITIVE_KEY_PATTERN.search(key):
         return REDACTED
     if isinstance(value, str):
-        redacted = DATABASE_URL_CREDENTIALS_PATTERN.sub(r"\g<scheme>[REDACTED]@", value)
+        redacted = DATABASE_URL_PATTERN.sub(REDACTED, value)
         return SENSITIVE_VALUE_PATTERN.sub(r"\g<key>\g<separator>[REDACTED]", redacted)
     if isinstance(value, Mapping):
         return {

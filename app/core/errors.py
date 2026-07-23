@@ -51,7 +51,6 @@ def problem_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
     return {
         status_code: {
             "description": HTTPStatus(status_code).phrase,
-            "model": ProblemDetail,
             "content": {
                 "application/problem+json": {
                     "schema": {"$ref": "#/components/schemas/ProblemDetail"}
@@ -60,6 +59,24 @@ def problem_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
         }
         for status_code in status_codes
     }
+
+
+def configure_problem_openapi(app: FastAPI) -> None:
+    default_openapi = app.openapi
+
+    def custom_openapi() -> dict[str, Any]:
+        schema = default_openapi()
+        components = cast(dict[str, Any], schema.setdefault("components", {}))
+        schemas = cast(dict[str, Any], components.setdefault("schemas", {}))
+        problem_schema = ProblemDetail.model_json_schema(
+            ref_template="#/components/schemas/{model}"
+        )
+        definitions = cast(dict[str, Any], problem_schema.pop("$defs", {}))
+        schemas.update(definitions)
+        schemas["ProblemDetail"] = problem_schema
+        return schema
+
+    app.__dict__["openapi"] = custom_openapi
 
 
 def _trace_id(request: Request) -> UUID:

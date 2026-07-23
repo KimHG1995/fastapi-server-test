@@ -91,6 +91,8 @@ async def test_unhandled_error_log_is_traceable_and_redacts_sensitive_values(
     assert "access-token-value" not in captured
     assert "secret-value" not in captured
     assert "db-user:db-password" not in captured
+    assert "postgresql+asyncpg://" not in captured
+    assert "db.example/app" not in captured
 
 
 def test_health_openapi_advertises_problem_details(protocol_app: FastAPI) -> None:
@@ -100,6 +102,7 @@ def test_health_openapi_advertises_problem_details(protocol_app: FastAPI) -> Non
     for status_code in ("422", "500"):
         schema = responses[status_code]["content"]["application/problem+json"]["schema"]
         assert schema == {"$ref": "#/components/schemas/ProblemDetail"}
+        assert set(responses[status_code]["content"]) == {"application/problem+json"}
     assert "ProblemDetail" in openapi["components"]["schemas"]
     assert "ProblemField" in openapi["components"]["schemas"]
 
