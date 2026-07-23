@@ -111,6 +111,7 @@
 - Create: `.python-version`
 - Create: `.env.example`
 - Create: `.gitignore`
+- Create: `README.md`
 - Create: `Makefile`
 - Create: `app/__init__.py`
 - Create: `app/main.py`
@@ -201,7 +202,17 @@ plugins = ["pydantic.mypy"]
 exclude = ["migrations/versions/"]
 ```
 
-Create `.python-version` containing `3.13`. Configure `.gitignore` for `.env`, `.venv`, `.uv-cache`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `__pycache__`, coverage output, and editor files. Create `.env.example` with non-secret example values for `APP_ENV`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`, `CORS_ORIGINS`, and `LOG_LEVEL`.
+Create `.python-version` containing `3.13`. Configure `.gitignore` for `.env`, `.venv`, `.uv-cache`, `.superpowers`, `.pytest_cache`, `.mypy_cache`, `.ruff_cache`, `__pycache__`, coverage output, and editor files. Create `.env.example` with non-secret example values for `APP_ENV`, `DATABASE_URL`, `JWT_SECRET`, `ACCESS_TOKEN_TTL_MINUTES`, `REFRESH_TOKEN_TTL_DAYS`, `CORS_ORIGINS`, and `LOG_LEVEL`.
+
+Create a minimal package README before dependency installation:
+
+```markdown
+# FastAPI Server Test
+
+FastAPI와 PostgreSQL 기반 학습용 REST API 서버입니다.
+```
+
+Task 10 will replace this minimal package description with the complete learning guide.
 
 Run:
 
@@ -383,7 +394,7 @@ Run:
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app tests
-git add pyproject.toml uv.lock .python-version .env.example .gitignore Makefile app tests
+git add pyproject.toml uv.lock .python-version .env.example .gitignore README.md Makefile app tests
 git commit -m "feat: scaffold FastAPI application foundation"
 ```
 
