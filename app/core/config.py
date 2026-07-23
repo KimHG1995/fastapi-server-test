@@ -1,7 +1,7 @@
 from functools import lru_cache
 from typing import Literal, Self
 
-from pydantic import SecretStr, model_validator
+from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -13,14 +13,29 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_env: Literal["development", "test", "production"] = "development"
-    database_url: str
-    jwt_secret: SecretStr
-    access_token_ttl_minutes: int = 15
-    refresh_token_ttl_days: int = 30
-    cors_origins_raw: str = ""
-    cors_origins: list[str] = []
-    log_level: str = "INFO"
+    app_env: Literal["development", "test", "production"] = Field(
+        default="development",
+        validation_alias=AliasChoices("APP_ENV", "app_env"),
+    )
+    database_url: str = Field(validation_alias=AliasChoices("DATABASE_URL", "database_url"))
+    jwt_secret: SecretStr = Field(validation_alias=AliasChoices("JWT_SECRET", "jwt_secret"))
+    access_token_ttl_minutes: int = Field(
+        default=15,
+        validation_alias=AliasChoices("ACCESS_TOKEN_TTL_MINUTES", "access_token_ttl_minutes"),
+    )
+    refresh_token_ttl_days: int = Field(
+        default=30,
+        validation_alias=AliasChoices("REFRESH_TOKEN_TTL_DAYS", "refresh_token_ttl_days"),
+    )
+    cors_origins_raw: str = Field(
+        default="",
+        validation_alias=AliasChoices("CORS_ORIGINS", "cors_origins_raw"),
+    )
+    cors_origins: list[str] = Field(default_factory=list)
+    log_level: str = Field(
+        default="INFO",
+        validation_alias=AliasChoices("LOG_LEVEL", "log_level"),
+    )
 
     @model_validator(mode="before")
     @classmethod
