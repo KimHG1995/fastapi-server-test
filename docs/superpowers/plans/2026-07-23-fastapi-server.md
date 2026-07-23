@@ -6,7 +6,7 @@
 
 **Architecture:** Use one feature-oriented modular monolith. FastAPI routers own HTTP boundaries, services own use cases and transactions, repositories own SQLAlchemy queries, Pydantic v2 models own external contracts, and SQLAlchemy 2 models own persistence. Every request receives one `AsyncSession`, successful responses use explicit generic response models, and failures use RFC 9457 Problem Details.
 
-**Tech Stack:** Python 3.13, FastAPI 0.139.2, Uvicorn 0.51.0, Pydantic 2.13.4, Pydantic Settings 2.14.2, SQLAlchemy 2.0.51, asyncpg 0.31.0, Alembic 1.18.5, PostgreSQL 18.4, PyJWT 2.13.0, pwdlib 0.3.0 with Argon2, structlog 26.1.0, pytest 9.1.1, pytest-asyncio 1.4.0, HTTPX 0.28.1, Testcontainers 4.14.2, Ruff 0.15.22, mypy 2.3.0, uv 0.11.31.
+**Tech Stack:** Python 3.13, Hatchling 1.31.0, FastAPI 0.139.2, Uvicorn 0.51.0, Pydantic 2.13.4, Pydantic Settings 2.14.2, SQLAlchemy 2.0.51, asyncpg 0.31.0, Alembic 1.18.5, PostgreSQL 18.4, PyJWT 2.13.0, pwdlib 0.3.0 with Argon2, structlog 26.1.0, pytest 9.1.1, pytest-asyncio 1.4.0, HTTPX 0.28.1, Testcontainers 4.14.2, Ruff 0.15.22, mypy 2.3.0, uv 0.11.31.
 
 ## Global Constraints
 
@@ -46,11 +46,12 @@
 - `app/main.py`, application factory and lifespan
 - `app/api/router.py`, versioned router composition
 - `app/core/config.py`, validated settings
+- `app/core/responses.py`, base success envelope used from the first endpoint
 - `app/db/session.py`, async engine and session dependency
 
 ### Protocol and observability
 
-- `app/core/responses.py`, success envelopes and pagination metadata
+- `app/core/responses.py`, pagination metadata and response helpers
 - `app/core/errors.py`, application errors, Problem Details, handlers
 - `app/core/middleware.py`, request ID propagation
 - `app/core/logging.py`, structlog configuration
@@ -117,6 +118,7 @@
 - Create: `app/api/router.py`
 - Create: `app/core/__init__.py`
 - Create: `app/core/config.py`
+- Create: `app/core/responses.py`
 - Create: `app/db/__init__.py`
 - Create: `app/db/session.py`
 - Create: `app/modules/__init__.py`
@@ -130,6 +132,7 @@
 **Interfaces:**
 
 - Produces: `Settings`, `get_settings() -> Settings`
+- Produces: `ResponseMeta`, `ApiResponse[T]`, `build_response(request: Request, data: T) -> ApiResponse[T]`
 - Produces: `create_app(settings: Settings | None = None) -> FastAPI`
 - Produces: `create_engine_and_sessionmaker(settings: Settings) -> tuple[AsyncEngine, async_sessionmaker[AsyncSession]]`
 - Produces: `get_session(request: Request) -> AsyncIterator[AsyncSession]`
@@ -159,7 +162,7 @@ dependencies = [
   "uvicorn[standard]==0.51.0",
 ]
 
-[dependency-groups]
+[project.optional-dependencies]
 dev = [
   "httpx==0.28.1",
   "mypy==2.3.0",
@@ -169,8 +172,12 @@ dev = [
   "testcontainers[postgres]==4.14.2",
 ]
 
-[tool.uv]
-package = false
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [tool.pytest.ini_options]
 addopts = "-ra --strict-config --strict-markers"
@@ -200,7 +207,7 @@ Run:
 
 ```bash
 uv lock
-uv sync --all-groups
+uv sync --extra dev
 ```
 
 Expected: `uv.lock` is created and Python 3.13 dependencies install successfully.
@@ -327,6 +334,37 @@ def get_settings() -> Settings:
 
 Implement `create_app()` with a lifespan that stores `engine` and `sessionmaker` on `app.state`, includes the health router and versioned API router, configures CORS from validated origins, and disposes the engine on shutdown. Implement `/health/live` without database access and `/health/ready` with `SELECT 1`.
 
+Create the base response contract in `app/core/responses.py` before implementing the health route:
+
+```python
+T = TypeVar("T")
+
+
+class ResponseMeta(BaseModel):
+    timestamp: datetime
+    path: str
+    trace_id: UUID
+
+
+class ApiResponse(BaseModel, Generic[T]):
+    success: Literal[True] = True
+    data: T
+    meta: ResponseMeta
+
+
+def build_response(request: Request, data: T) -> ApiResponse[T]:
+    return ApiResponse(
+        data=data,
+        meta=ResponseMeta(
+            timestamp=datetime.now(UTC),
+            path=request.url.path,
+            trace_id=request.state.trace_id,
+        ),
+    )
+```
+
+Register the request ID setup needed by this helper in `create_app`. Task 2 will extract the full context middleware, add header propagation, and connect the same ID to structured logging.
+
 - [ ] **Step 5: Run focused tests and verify GREEN**
 
 Run:
@@ -353,11 +391,11 @@ Expected: quality commands exit with code 0 and the commit is created.
 
 ---
 
-### Task 2: Typed success envelopes, request IDs, logging, and Problem Details
+### Task 2: Pagination envelopes, request IDs, logging, and Problem Details
 
 **Files:**
 
-- Create: `app/core/responses.py`
+- Modify: `app/core/responses.py`
 - Create: `app/core/errors.py`
 - Create: `app/core/middleware.py`
 - Create: `app/core/logging.py`
@@ -368,7 +406,8 @@ Expected: quality commands exit with code 0 and the commit is created.
 
 **Interfaces:**
 
-- Produces: `ResponseMeta`, `PageMeta`, `ApiResponse[T]`, `PaginatedResponse[T]`
+- Consumes: `ResponseMeta`, `ApiResponse[T]`, `build_response`
+- Produces: `PageMeta`, `PaginatedResponse[T]`, `build_page_response`
 - Produces: `ProblemField`, `ProblemDetail`
 - Produces: `AppError(code, status_code, title, detail, type_slug, headers=None)`
 - Produces: `build_response(request: Request, data: T) -> ApiResponse[T]`
@@ -412,7 +451,7 @@ uv run pytest tests/unit/test_responses.py tests/e2e/test_protocol.py -q
 
 Expected: assertions fail because envelopes, request IDs, and Problem Details are absent.
 
-- [ ] **Step 3: Implement response contracts**
+- [ ] **Step 3: Extend the response contracts with pagination**
 
 Use generic Pydantic v2 models:
 
@@ -420,23 +459,11 @@ Use generic Pydantic v2 models:
 T = TypeVar("T")
 
 
-class ResponseMeta(BaseModel):
-    timestamp: datetime
-    path: str
-    trace_id: UUID
-
-
 class PageMeta(ResponseMeta):
     page: int
     page_size: int
     total: int
     total_pages: int
-
-
-class ApiResponse(BaseModel, Generic[T]):
-    success: Literal[True] = True
-    data: T
-    meta: ResponseMeta
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
@@ -1245,7 +1272,7 @@ Assert:
 
 - `make verify` includes Ruff check, Ruff format check, mypy, all pytest suites, document validation, and OpenAPI drift validation.
 - CI uses Python 3.13 and PostgreSQL 18.4.
-- CI runs `uv sync --frozen --all-groups`.
+- CI runs `uv sync --frozen --extra dev`.
 - CI runs Alembic before integration and E2E tests.
 - CI builds the Docker image.
 
