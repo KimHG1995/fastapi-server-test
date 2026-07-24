@@ -12,6 +12,8 @@ from pydantic import (
     model_validator,
 )
 
+POSTGRES_INTEGER_MAX = 2_147_483_647
+
 
 class ProductSortField(StrEnum):
     CREATED_AT = "created_at"
@@ -42,12 +44,20 @@ class ProductCreate(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
     ]
     description: Annotated[str | None, StringConstraints(max_length=2000)] = None
-    price_in_minor_units: int = Field(ge=0, strict=True)
+    price_in_minor_units: int = Field(
+        ge=0,
+        le=POSTGRES_INTEGER_MAX,
+        strict=True,
+    )
     currency: Annotated[
         str,
         StringConstraints(to_upper=True, pattern=r"^[A-Z]{3}$"),
     ]
-    stock_quantity: int = Field(ge=0, strict=True)
+    stock_quantity: int = Field(
+        ge=0,
+        le=POSTGRES_INTEGER_MAX,
+        strict=True,
+    )
     is_active: bool = True
 
     @field_validator("currency", mode="before")
@@ -64,12 +74,22 @@ class ProductUpdate(BaseModel):
         StringConstraints(strip_whitespace=True, min_length=1, max_length=200),
     ] = None
     description: Annotated[str | None, StringConstraints(max_length=2000)] = None
-    price_in_minor_units: int | None = Field(default=None, ge=0, strict=True)
+    price_in_minor_units: int | None = Field(
+        default=None,
+        ge=0,
+        le=POSTGRES_INTEGER_MAX,
+        strict=True,
+    )
     currency: Annotated[
         str | None,
         StringConstraints(to_upper=True, pattern=r"^[A-Z]{3}$"),
     ] = None
-    stock_quantity: int | None = Field(default=None, ge=0, strict=True)
+    stock_quantity: int | None = Field(
+        default=None,
+        ge=0,
+        le=POSTGRES_INTEGER_MAX,
+        strict=True,
+    )
     is_active: bool | None = None
 
     @field_validator("currency", mode="before")
@@ -81,6 +101,21 @@ class ProductUpdate(BaseModel):
     def reject_empty_update(self) -> Self:
         if not self.model_fields_set:
             raise ValueError("At least one product field must be provided.")
+        non_nullable_fields = {
+            "name",
+            "price_in_minor_units",
+            "currency",
+            "stock_quantity",
+            "is_active",
+        }
+        explicitly_null = sorted(
+            field
+            for field in self.model_fields_set & non_nullable_fields
+            if getattr(self, field) is None
+        )
+        if explicitly_null:
+            fields = ", ".join(explicitly_null)
+            raise ValueError(f"Product fields cannot be null: {fields}.")
         return self
 
 

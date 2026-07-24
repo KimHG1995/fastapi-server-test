@@ -23,6 +23,20 @@ from app.modules.users.models import User, UserRole
 
 CREATOR_ID = UUID("468b6e55-0da2-4db7-9459-203652781f87")
 PRODUCT_ID = UUID("f3f35b70-dd75-4886-b55e-a771de4ebcaf")
+POSTGRES_INTEGER_MAX = 2_147_483_647
+
+
+class _DriverConstraintViolation(Exception):
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("driver constraint violation")
+        self.constraint_name = constraint_name
+
+
+def _integrity_error(constraint_name: str) -> IntegrityError:
+    driver_error = _DriverConstraintViolation(constraint_name)
+    adapter_error = RuntimeError("asyncpg adapter integrity error")
+    adapter_error.__cause__ = driver_error
+    return IntegrityError("insert", {}, adapter_error)
 
 
 class _Session:
@@ -52,18 +66,21 @@ class _ProductRepository:
         self,
         *,
         product: Product | None = None,
-        duplicate_on_create: bool = False,
+        create_error: IntegrityError | None = None,
+        existing_sku: Product | None = None,
     ) -> None:
         self.product = product
-        self.duplicate_on_create = duplicate_on_create
+        self.create_error = create_error
+        self.existing_sku = existing_sku
         self.created: list[Product] = []
+        self.queried_skus: list[str] = []
         self.updated: list[tuple[UUID, dict[str, object]]] = []
         self.deleted: list[tuple[UUID, datetime]] = []
         self.list_queries: list[ProductListQuery] = []
 
     async def create(self, product: Product) -> Product:
-        if self.duplicate_on_create:
-            raise IntegrityError("insert", {}, RuntimeError("duplicate sku"))
+        if self.create_error is not None:
+            raise self.create_error
         self.created.append(product)
         now = datetime.now(UTC)
         product.id = PRODUCT_ID
@@ -71,6 +88,10 @@ class _ProductRepository:
         product.updated_at = now
         self.product = product
         return product
+
+    async def get_by_sku(self, sku: str) -> Product | None:
+        self.queried_skus.append(sku)
+        return self.existing_sku
 
     async def get_public_by_id(self, product_id: UUID) -> Product | None:
         assert product_id == PRODUCT_ID
@@ -189,10 +210,52 @@ def test_product_create_requires_integer_minor_units_and_stock(
         _create_request(**{field: value})
 
 
+@pytest.mark.parametrize("field", ["price_in_minor_units", "stock_quantity"])
+def test_product_create_enforces_postgresql_integer_max(field: str) -> None:
+    boundary = _create_request(**{field: POSTGRES_INTEGER_MAX})
+
+    assert getattr(boundary, field) == POSTGRES_INTEGER_MAX
+    with pytest.raises(ValidationError):
+        _create_request(**{field: POSTGRES_INTEGER_MAX + 1})
+
+
 def test_product_update_rejects_empty_extra_and_immutable_sku() -> None:
     for values in ({}, {"sku": "CHANGED"}, {"unexpected": "value"}):
         with pytest.raises(ValidationError):
             ProductUpdate.model_validate(values)
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "name",
+        "price_in_minor_units",
+        "currency",
+        "stock_quantity",
+        "is_active",
+    ],
+)
+def test_product_update_rejects_explicit_null_for_non_nullable_fields(
+    field: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        ProductUpdate.model_validate({field: None})
+
+
+def test_product_update_allows_explicit_null_description() -> None:
+    request = ProductUpdate.model_validate({"description": None})
+
+    assert request.model_fields_set == {"description"}
+    assert request.description is None
+
+
+@pytest.mark.parametrize("field", ["price_in_minor_units", "stock_quantity"])
+def test_product_update_enforces_postgresql_integer_max(field: str) -> None:
+    boundary = ProductUpdate.model_validate({field: POSTGRES_INTEGER_MAX})
+
+    assert getattr(boundary, field) == POSTGRES_INTEGER_MAX
+    with pytest.raises(ValidationError):
+        ProductUpdate.model_validate({field: POSTGRES_INTEGER_MAX + 1})
 
 
 async def test_create_maps_fields_and_returns_public_shape() -> None:
@@ -210,14 +273,41 @@ async def test_create_maps_fields_and_returns_public_shape() -> None:
     assert session.refreshed == repository.created
 
 
-async def test_create_maps_duplicate_sku_race_to_conflict() -> None:
-    service, session = _service(_ProductRepository(duplicate_on_create=True))
+async def test_create_prechecks_sku_against_soft_deleted_products() -> None:
+    repository = _ProductRepository(existing_sku=_product(deleted_at=datetime.now(UTC)))
+    service, session = _service(repository)
 
     with pytest.raises(AppError) as raised:
         await service.create(_create_request(), CREATOR_ID)
 
     assert raised.value.status_code == 409
     assert raised.value.code == "SKU_ALREADY_EXISTS"
+    assert repository.queried_skus == ["BOOK-001"]
+    assert repository.created == []
+    assert session.rollbacks == 1
+
+
+async def test_create_maps_duplicate_sku_race_to_conflict() -> None:
+    service, session = _service(
+        _ProductRepository(create_error=_integrity_error("uq_products_sku"))
+    )
+
+    with pytest.raises(AppError) as raised:
+        await service.create(_create_request(), CREATOR_ID)
+
+    assert raised.value.status_code == 409
+    assert raised.value.code == "SKU_ALREADY_EXISTS"
+    assert session.rollbacks == 1
+
+
+async def test_create_propagates_non_sku_integrity_errors() -> None:
+    integrity_error = _integrity_error("fk_products_created_by_id_users")
+    service, session = _service(_ProductRepository(create_error=integrity_error))
+
+    with pytest.raises(IntegrityError) as raised:
+        await service.create(_create_request(), CREATOR_ID)
+
+    assert raised.value is integrity_error
     assert session.rollbacks == 1
 
 

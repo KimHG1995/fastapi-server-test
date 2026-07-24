@@ -45,6 +45,11 @@ class ProductRepository:
         await self._session.flush()
         return product
 
+    async def get_by_sku(self, sku: str) -> Product | None:
+        statement = select(Product).where(Product.sku == sku)
+        result = await self._session.execute(statement)
+        return result.scalar_one_or_none()
+
     async def get_public_by_id(self, product_id: UUID) -> Product | None:
         statement = select(Product).where(
             Product.id == product_id,

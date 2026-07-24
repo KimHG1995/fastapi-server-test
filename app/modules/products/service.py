@@ -14,6 +14,32 @@ from app.modules.products.schemas import (
     ProductUpdate,
 )
 
+SKU_UNIQUE_CONSTRAINT = "uq_products_sku"
+
+
+def _constraint_name(error: IntegrityError) -> str | None:
+    pending: list[BaseException] = [error.orig] if isinstance(error.orig, BaseException) else []
+    visited: set[int] = set()
+    while pending:
+        current = pending.pop()
+        identity = id(current)
+        if identity in visited:
+            continue
+        visited.add(identity)
+
+        constraint_name = getattr(current, "constraint_name", None)
+        if isinstance(constraint_name, str):
+            return constraint_name
+
+        for linked_error in (
+            getattr(current, "orig", None),
+            current.__cause__,
+            current.__context__,
+        ):
+            if isinstance(linked_error, BaseException):
+                pending.append(linked_error)
+    return None
+
 
 class SkuAlreadyExistsError(AppError):
     def __init__(self) -> None:
@@ -56,13 +82,17 @@ class ProductService:
             created_by_id=creator_id,
         )
         try:
+            if await self._repository.get_by_sku(request.sku) is not None:
+                raise SkuAlreadyExistsError
             created = await self._repository.create(product)
             await self._session.refresh(created)
             result = ProductRead.model_validate(created)
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
-            raise SkuAlreadyExistsError from exc
+            if _constraint_name(exc) == SKU_UNIQUE_CONSTRAINT:
+                raise SkuAlreadyExistsError from exc
+            raise
         except Exception:
             await self._session.rollback()
             raise

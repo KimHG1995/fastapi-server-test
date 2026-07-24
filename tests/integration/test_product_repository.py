@@ -95,6 +95,9 @@ async def test_public_queries_exclude_inactive_and_deleted_products(
     assert await repository.get_public_by_id(visible.id) is not None
     assert await repository.get_public_by_id(inactive.id) is None
     assert await repository.get_public_by_id(deleted.id) is None
+    stored_deleted = await repository.get_by_sku(deleted.sku)
+    assert stored_deleted is not None
+    assert stored_deleted.id == deleted.id
 
 
 @pytest.mark.parametrize(

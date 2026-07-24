@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 from app.core.config import Settings
 from app.core.security import hash_password
 from app.main import create_app
+from app.modules.products.schemas import POSTGRES_INTEGER_MAX
 from app.modules.users.models import User, UserRole
 
 ADMIN_EMAIL = "admin@example.com"
@@ -175,10 +176,76 @@ async def test_product_input_contract_rejects_extra_sku_update_empty_and_fractio
         headers=headers,
         json={},
     )
+    boundary_create = await client.post(
+        "/api/v1/products",
+        headers=headers,
+        json={
+            **PRODUCT_BODY,
+            "sku": "INTEGER-BOUNDARY",
+            "price_in_minor_units": POSTGRES_INTEGER_MAX,
+            "stock_quantity": POSTGRES_INTEGER_MAX,
+        },
+    )
+    overflow_creates = [
+        await client.post(
+            "/api/v1/products",
+            headers=headers,
+            json={
+                **PRODUCT_BODY,
+                "sku": f"OVERFLOW-{field}",
+                field: POSTGRES_INTEGER_MAX + 1,
+            },
+        )
+        for field in ("price_in_minor_units", "stock_quantity")
+    ]
+    boundary_update = await client.patch(
+        f"/api/v1/products/{product_id}",
+        headers=headers,
+        json={
+            "price_in_minor_units": POSTGRES_INTEGER_MAX,
+            "stock_quantity": POSTGRES_INTEGER_MAX,
+        },
+    )
+    overflow_updates = [
+        await client.patch(
+            f"/api/v1/products/{product_id}",
+            headers=headers,
+            json={field: POSTGRES_INTEGER_MAX + 1},
+        )
+        for field in ("price_in_minor_units", "stock_quantity")
+    ]
+    null_updates = [
+        await client.patch(
+            f"/api/v1/products/{product_id}",
+            headers=headers,
+            json={field: None},
+        )
+        for field in (
+            "name",
+            "price_in_minor_units",
+            "currency",
+            "stock_quantity",
+            "is_active",
+        )
+    ]
 
-    for response in (extra, fractional, sku_update, empty_update):
+    for response in (
+        extra,
+        fractional,
+        sku_update,
+        empty_update,
+        *overflow_creates,
+        *overflow_updates,
+        *null_updates,
+    ):
         assert response.status_code == 422
         assert response.json()["code"] == "VALIDATION_FAILED"
+    assert boundary_create.status_code == 201
+    assert boundary_create.json()["data"]["price_in_minor_units"] == POSTGRES_INTEGER_MAX
+    assert boundary_create.json()["data"]["stock_quantity"] == POSTGRES_INTEGER_MAX
+    assert boundary_update.status_code == 200
+    assert boundary_update.json()["data"]["price_in_minor_units"] == POSTGRES_INTEGER_MAX
+    assert boundary_update.json()["data"]["stock_quantity"] == POSTGRES_INTEGER_MAX
 
 
 async def test_public_list_search_pagination_and_visibility(
@@ -246,6 +313,10 @@ async def test_duplicate_sku_race_is_reported_as_domain_conflict(
         headers=headers,
         json=PRODUCT_BODY,
     )
+    deleted = await client.delete(
+        f"/api/v1/products/{first.json()['data']['id']}",
+        headers=headers,
+    )
     duplicate = await client.post(
         "/api/v1/products",
         headers=headers,
@@ -253,6 +324,7 @@ async def test_duplicate_sku_race_is_reported_as_domain_conflict(
     )
 
     assert first.status_code == 201
+    assert deleted.status_code == 204
     assert duplicate.status_code == 409
     assert duplicate.json()["code"] == "SKU_ALREADY_EXISTS"
 
