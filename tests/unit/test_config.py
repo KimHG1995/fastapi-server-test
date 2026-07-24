@@ -1,3 +1,4 @@
+import warnings
 from pathlib import Path
 
 from pydantic import SecretStr
@@ -67,3 +68,32 @@ def test_settings_load_uppercase_dotenv_file(tmp_path: Path) -> None:
     assert settings.refresh_token_ttl_days == 40
     assert settings.cors_origins == ["http://localhost:3000", "http://localhost:5173"]
     assert settings.log_level == "DEBUG"
+
+
+def test_settings_supports_the_runtime_compose_secret_directory(tmp_path: Path) -> None:
+    secret_directory = tmp_path / "run" / "secrets"
+    secret_directory.mkdir(parents=True)
+    (secret_directory / "jwt_secret").write_text("s" * 32, encoding="utf-8")
+
+    settings = Settings(
+        _env_file=None,
+        _secrets_dir=secret_directory,
+        APP_ENV="test",
+        DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/app",
+    )
+
+    assert Settings.model_config["secrets_dir"] == "/run/secrets"
+    assert settings.jwt_secret.get_secret_value() == "s" * 32
+
+
+def test_missing_runtime_secret_directory_is_silent_for_local_settings() -> None:
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        Settings(
+            _env_file=None,
+            APP_ENV="test",
+            DATABASE_URL="postgresql+asyncpg://app:app@localhost:5432/app",
+            JWT_SECRET=SecretStr("x" * 32),
+        )
+
+    assert not [warning for warning in captured if "/run/secrets" in str(warning.message)]

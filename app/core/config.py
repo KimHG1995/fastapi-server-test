@@ -1,8 +1,24 @@
 from functools import lru_cache
-from typing import Literal, Self
+from os import PathLike
+from pathlib import Path
+from typing import Any, Literal, Self, cast
 
 from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings.sources import PydanticBaseSettingsSource, SecretsSettingsSource
+
+
+class OptionalSecretsSettingsSource(SecretsSettingsSource):
+    def __call__(self) -> dict[str, Any]:
+        configured = self.secrets_dir
+        if configured is None:
+            return {}
+
+        directories = [configured] if isinstance(configured, (str, PathLike)) else list(configured)
+        if not any(Path(directory).expanduser().exists() for directory in directories):
+            return {}
+
+        return super().__call__()
 
 
 class Settings(BaseSettings):
@@ -11,6 +27,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         case_sensitive=True,
         extra="ignore",
+        secrets_dir="/run/secrets",
     )
 
     app_env: Literal["development", "test", "production"] = Field(
@@ -36,6 +53,22 @@ class Settings(BaseSettings):
         default="INFO",
         validation_alias=AliasChoices("LOG_LEVEL", "log_level"),
     )
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        default_secret_source = cast(SecretsSettingsSource, file_secret_settings)
+        optional_secret_source = OptionalSecretsSettingsSource(
+            settings_cls,
+            secrets_dir=default_secret_source.secrets_dir,
+        )
+        return init_settings, env_settings, dotenv_settings, optional_secret_source
 
     @model_validator(mode="before")
     @classmethod

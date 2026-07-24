@@ -2,8 +2,7 @@ name: fastapi-server-test
 
 x-app-environment: &app-environment
   APP_ENV: ${APP_ENV:-development}
-  DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://app:app@postgres:5432/app}
-  JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set in the shell or .env}
+  DATABASE_URL: ${COMPOSE_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-app}:${POSTGRES_PASSWORD:-app}@postgres:5432/${POSTGRES_DB:-app}}
   ACCESS_TOKEN_TTL_MINUTES: ${ACCESS_TOKEN_TTL_MINUTES:-15}
   REFRESH_TOKEN_TTL_DAYS: ${REFRESH_TOKEN_TTL_DAYS:-30}
   CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://localhost:5173}
@@ -14,10 +13,10 @@ x-app-service: &app-service
     context: .
     dockerfile: Dockerfile
   image: fastapi-server-test:local
-  env_file:
-    - path: .env
-      required: false
   environment: *app-environment
+  secrets:
+    - source: jwt_secret
+      target: jwt_secret
   networks:
     - application
 
@@ -95,3 +94,7 @@ volumes:
 networks:
   application:
     name: fastapi-server-test-network
+
+secrets:
+  jwt_secret:
+    environment: JWT_SECRET

@@ -11,10 +11,10 @@ ENV UV_COMPILE_BYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml uv.lock README.md ./
+COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY alembic.ini ./
+COPY README.md alembic.ini ./
 COPY app ./app
 COPY migrations ./migrations
 RUN uv sync --frozen --no-dev
