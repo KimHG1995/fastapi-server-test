@@ -77,25 +77,36 @@ class AuthService:
         email = str(request.email).strip().lower()
         async with self._session.begin():
             user = await self._repository.get_user_by_email(email)
-            if user is None:
-                await verify_password_async(request.password, DUMMY_PASSWORD_HASH)
-                raise InvalidCredentialsError
-            password_matches = await verify_password_async(
-                request.password,
-                user.password_hash,
+            authentication_snapshot = (
+                None if user is None else (user.id, user.password_hash, user.is_active)
             )
-            if not password_matches or not user.is_active:
-                raise InvalidCredentialsError
 
+        if authentication_snapshot is None:
+            await verify_password_async(request.password, DUMMY_PASSWORD_HASH)
+            raise InvalidCredentialsError
+
+        user_id, password_hash, was_active = authentication_snapshot
+        password_matches = await verify_password_async(request.password, password_hash)
+        if not password_matches or not was_active:
+            raise InvalidCredentialsError
+
+        async with self._session.begin():
+            current_user = await self._repository.get_user_for_update(user_id)
+            if (
+                current_user is None
+                or not current_user.is_active
+                or current_user.password_hash != password_hash
+            ):
+                raise InvalidCredentialsError
             now = datetime.now(UTC)
             raw_refresh_token = generate_refresh_token()
             refresh_token = RefreshToken(
-                user_id=user.id,
+                user_id=current_user.id,
                 token_hash=hash_refresh_token(raw_refresh_token),
                 expires_at=now + timedelta(days=self._settings.refresh_token_ttl_days),
             )
             await self._repository.add_refresh_token(refresh_token)
-            access_token = create_access_token(user, self._settings, now=now)
+            access_token = create_access_token(current_user, self._settings, now=now)
             return TokenPair(
                 access_token=access_token,
                 refresh_token=raw_refresh_token,

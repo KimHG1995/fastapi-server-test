@@ -49,11 +49,19 @@ class _Session:
 
 
 class _Repository:
-    def __init__(self, user: User | None = None) -> None:
+    _USE_INITIAL_USER = object()
+
+    def __init__(
+        self,
+        user: User | None = None,
+        reloaded_user: User | None | object = _USE_INITIAL_USER,
+    ) -> None:
         self.user = user
+        self.reloaded_user = reloaded_user
         self.added_users: list[User] = []
         self.added_refresh_tokens: list[RefreshToken] = []
         self.lookup_emails: list[str] = []
+        self.locked_user_ids: list[UUID] = []
 
     async def get_user_by_email(self, email: str) -> User | None:
         self.lookup_emails.append(email)
@@ -69,6 +77,12 @@ class _Repository:
         self.user = user
         self.added_users.append(user)
         return user
+
+    async def get_user_for_update(self, user_id: UUID) -> User | None:
+        self.locked_user_ids.append(user_id)
+        if self.reloaded_user is self._USE_INITIAL_USER:
+            return self.user
+        return cast(User | None, self.reloaded_user)
 
     async def add_refresh_token(self, refresh_token: RefreshToken) -> RefreshToken:
         self.added_refresh_tokens.append(refresh_token)
@@ -235,11 +249,13 @@ async def test_unknown_email_verifies_module_level_dummy_hash(
     test_settings: Settings,
     monkeypatch: MonkeyPatch,
 ) -> None:
-    service, _ = _service(test_settings, _Repository())
+    service, session = _service(test_settings, _Repository())
     calls: list[tuple[str, str]] = []
+    transaction_states: list[bool] = []
 
     async def fake_verify_password_async(password: str, password_hash: str) -> bool:
         calls.append((password, password_hash))
+        transaction_states.append(session.transaction_active)
         return False
 
     monkeypatch.setattr(
@@ -254,6 +270,83 @@ async def test_unknown_email_verifies_module_level_dummy_hash(
         )
 
     assert calls == [("wrong-password", DUMMY_PASSWORD_HASH)]
+    assert transaction_states == [False]
+
+
+async def test_known_user_password_verification_runs_outside_transaction(
+    test_settings: Settings,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = _Repository(_user())
+    service, session = _service(test_settings, repository)
+    transaction_states: list[bool] = []
+
+    async def fake_verify_password_async(password: str, password_hash: str) -> bool:
+        del password, password_hash
+        transaction_states.append(session.transaction_active)
+        return True
+
+    monkeypatch.setattr(
+        auth_service_module,
+        "verify_password_async",
+        fake_verify_password_async,
+    )
+
+    await service.login(
+        LoginRequest(
+            email="learner@example.com",
+            password="correct-horse-battery-staple",  # noqa: S106
+        )
+    )
+
+    assert transaction_states == [False]
+    assert session.transactions == 2
+
+
+@pytest.mark.parametrize(
+    "changed_state",
+    ["deleted", "inactive", "password_changed"],
+)
+async def test_login_rejects_user_state_changed_after_password_verification(
+    test_settings: Settings,
+    monkeypatch: MonkeyPatch,
+    changed_state: str,
+) -> None:
+    initial_user = _user()
+    if changed_state == "deleted":
+        reloaded_user = None
+    else:
+        reloaded_user = _user(is_active=changed_state != "inactive")
+        reloaded_user.password_hash = initial_user.password_hash
+        if changed_state == "password_changed":
+            reloaded_user.password_hash = hash_password("replacement-password")
+
+    repository = _Repository(initial_user, reloaded_user=reloaded_user)
+    service, session = _service(test_settings, repository)
+
+    async def successful_verification(password: str, password_hash: str) -> bool:
+        del password, password_hash
+        assert not session.transaction_active
+        return True
+
+    monkeypatch.setattr(
+        auth_service_module,
+        "verify_password_async",
+        successful_verification,
+    )
+
+    with pytest.raises(AppError) as raised:
+        await service.login(
+            LoginRequest(
+                email="learner@example.com",
+                password="correct-horse-battery-staple",  # noqa: S106
+            )
+        )
+
+    assert raised.value.code == "INVALID_CREDENTIALS"
+    assert raised.value.status_code == 401
+    assert session.transactions == 2
+    assert repository.added_refresh_tokens == []
 
 
 async def test_inactive_user_cannot_log_in(test_settings: Settings) -> None:
@@ -294,4 +387,4 @@ async def test_successful_login_persists_only_refresh_token_hash(
     assert len(stored.token_hash) == 64
     assert stored.token_hash != result.refresh_token
     assert result.refresh_token not in repr(stored.__dict__)
-    assert session.transactions == 1
+    assert session.transactions == 2
