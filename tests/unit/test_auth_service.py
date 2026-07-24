@@ -5,11 +5,14 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from pytest import MonkeyPatch
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import app.modules.auth.service as auth_service_module
 from app.core.config import Settings
 from app.core.errors import AppError
-from app.core.security import hash_password
+from app.core.security import DUMMY_PASSWORD_HASH, hash_password
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.repository import AuthRepository
 from app.modules.auth.schemas import LoginRequest, RegisterRequest
@@ -18,7 +21,11 @@ from app.modules.users.models import User, UserRole
 
 
 class _Transaction(AbstractAsyncContextManager[None]):
+    def __init__(self, session: "_Session") -> None:
+        self._session = session
+
     async def __aenter__(self) -> None:
+        self._session.transaction_active = True
         return None
 
     async def __aexit__(
@@ -27,16 +34,18 @@ class _Transaction(AbstractAsyncContextManager[None]):
         exc_value: BaseException | None,
         traceback: TracebackType | None,
     ) -> None:
+        self._session.transaction_active = False
         return None
 
 
 class _Session:
     def __init__(self) -> None:
         self.transactions = 0
+        self.transaction_active = False
 
     def begin(self) -> _Transaction:
         self.transactions += 1
-        return _Transaction()
+        return _Transaction(self)
 
 
 class _Repository:
@@ -121,6 +130,37 @@ async def test_registration_normalizes_email_and_always_assigns_user(
     assert session.transactions == 1
 
 
+async def test_registration_hashes_password_before_opening_transaction(
+    test_settings: Settings,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    repository = _Repository()
+    service, session = _service(test_settings, repository)
+    transaction_states: list[bool] = []
+
+    async def fake_hash_password_async(password: str) -> str:
+        assert password == "correct-horse-battery-staple"  # noqa: S105
+        transaction_states.append(session.transaction_active)
+        return "offloaded-password-hash"
+
+    monkeypatch.setattr(
+        auth_service_module,
+        "hash_password_async",
+        fake_hash_password_async,
+    )
+
+    await service.register(
+        RegisterRequest(
+            email="learner@example.com",
+            password="correct-horse-battery-staple",  # noqa: S106
+            display_name="Learner",
+        )
+    )
+
+    assert transaction_states == [False]
+    assert repository.added_users[0].password_hash == "offloaded-password-hash"  # noqa: S105
+
+
 async def test_duplicate_registration_raises_email_already_exists(
     test_settings: Settings,
 ) -> None:
@@ -131,6 +171,29 @@ async def test_duplicate_registration_raises_email_already_exists(
         await service.register(
             RegisterRequest(
                 email="LEARNER@example.com",
+                password="correct-horse-battery-staple",  # noqa: S106
+                display_name="Learner",
+            )
+        )
+
+    assert raised.value.code == "EMAIL_ALREADY_EXISTS"
+    assert raised.value.status_code == 409
+
+
+async def test_registration_integrity_race_maps_to_email_conflict(
+    test_settings: Settings,
+) -> None:
+    class _RacingRepository(_Repository):
+        async def add_user(self, user: User) -> User:
+            del user
+            raise IntegrityError("INSERT INTO users", {}, RuntimeError("duplicate"))
+
+    service, _ = _service(test_settings, _RacingRepository())
+
+    with pytest.raises(AppError) as raised:
+        await service.register(
+            RegisterRequest(
+                email="learner@example.com",
                 password="correct-horse-battery-staple",  # noqa: S106
                 display_name="Learner",
             )
@@ -166,6 +229,31 @@ async def test_unknown_email_and_bad_password_return_same_error(
     )
     assert unknown.value.code == "INVALID_CREDENTIALS"
     assert unknown.value.status_code == 401
+
+
+async def test_unknown_email_verifies_module_level_dummy_hash(
+    test_settings: Settings,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    service, _ = _service(test_settings, _Repository())
+    calls: list[tuple[str, str]] = []
+
+    async def fake_verify_password_async(password: str, password_hash: str) -> bool:
+        calls.append((password, password_hash))
+        return False
+
+    monkeypatch.setattr(
+        auth_service_module,
+        "verify_password_async",
+        fake_verify_password_async,
+    )
+
+    with pytest.raises(AppError):
+        await service.login(
+            LoginRequest(email="missing@example.com", password="wrong-password")  # noqa: S106
+        )
+
+    assert calls == [("wrong-password", DUMMY_PASSWORD_HASH)]
 
 
 async def test_inactive_user_cannot_log_in(test_settings: Settings) -> None:

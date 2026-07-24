@@ -1,10 +1,13 @@
 import base64
 import hashlib
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import UUID, uuid4
 
 import jwt
 import pytest
+from pytest import MonkeyPatch
 
 from app.core.config import Settings
 from app.core.security import (
@@ -13,8 +16,10 @@ from app.core.security import (
     decode_access_token,
     generate_refresh_token,
     hash_password,
+    hash_password_async,
     hash_refresh_token,
     verify_password,
+    verify_password_async,
 )
 from app.modules.users.models import User, UserRole
 
@@ -43,6 +48,32 @@ def test_refresh_token_contains_256_bits_of_entropy() -> None:
 
     assert len(base64.urlsafe_b64decode(token + "==")) == 32
     assert hash_refresh_token(token) == hashlib.sha256(token.encode()).hexdigest()
+
+
+async def test_async_password_helpers_offload_cpu_work_to_a_thread(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    calls: list[tuple[Callable[..., object], tuple[object, ...]]] = []
+
+    async def fake_to_thread(
+        function: Callable[..., object],
+        *args: object,
+        **kwargs: Any,
+    ) -> object:
+        assert not kwargs
+        calls.append((function, args))
+        return function(*args)
+
+    monkeypatch.setattr("app.core.security.asyncio.to_thread", fake_to_thread)
+
+    encoded = await hash_password_async("correct-horse-battery-staple")
+    verified = await verify_password_async("correct-horse-battery-staple", encoded)
+
+    assert verified
+    assert calls == [
+        (hash_password, ("correct-horse-battery-staple",)),
+        (verify_password, ("correct-horse-battery-staple", encoded)),
+    ]
 
 
 def test_access_token_contains_required_claims(test_settings: Settings) -> None:

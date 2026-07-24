@@ -9,9 +9,9 @@ from app.core.security import (
     DUMMY_PASSWORD_HASH,
     create_access_token,
     generate_refresh_token,
-    hash_password,
+    hash_password_async,
     hash_refresh_token,
-    verify_password,
+    verify_password_async,
 )
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.repository import AuthRepository
@@ -56,13 +56,14 @@ class AuthService:
 
     async def register(self, request: RegisterRequest) -> UserRead:
         email = str(request.email).strip().lower()
+        password_hash = await hash_password_async(request.password)
         try:
             async with self._session.begin():
                 if await self._repository.get_user_by_email(email) is not None:
                     raise EmailAlreadyExistsError
                 user = User(
                     email=email,
-                    password_hash=hash_password(request.password),
+                    password_hash=password_hash,
                     display_name=request.display_name,
                     role=UserRole.USER,
                     is_active=True,
@@ -77,9 +78,13 @@ class AuthService:
         async with self._session.begin():
             user = await self._repository.get_user_by_email(email)
             if user is None:
-                verify_password(request.password, DUMMY_PASSWORD_HASH)
+                await verify_password_async(request.password, DUMMY_PASSWORD_HASH)
                 raise InvalidCredentialsError
-            if not verify_password(request.password, user.password_hash) or not user.is_active:
+            password_matches = await verify_password_async(
+                request.password,
+                user.password_hash,
+            )
+            if not password_matches or not user.is_active:
                 raise InvalidCredentialsError
 
             now = datetime.now(UTC)
