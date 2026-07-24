@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import get_settings
 from app.core.security import hash_password_async
+from app.db.errors import get_constraint_name
 from app.db.session import create_engine_and_sessionmaker
 from app.modules.auth.schemas import RegisterRequest
 from app.modules.users.models import User, UserRole
@@ -17,6 +18,9 @@ from app.modules.users.models import User, UserRole
 
 class AdminAlreadyExistsError(Exception):
     pass
+
+
+EMAIL_UNIQUE_CONSTRAINT = "uq_users_email"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -34,6 +38,7 @@ async def create_admin(email: str, display_name: str, password: str) -> User:
     engine, session_factory = create_engine_and_sessionmaker(get_settings())
     try:
         async with session_factory() as session:
+            commit_started = False
             try:
                 existing = await session.scalar(select(User).where(User.email == normalized_email))
                 if existing is not None:
@@ -47,11 +52,14 @@ async def create_admin(email: str, display_name: str, password: str) -> User:
                     is_active=True,
                 )
                 session.add(user)
+                commit_started = True
                 await session.commit()
                 return user
             except IntegrityError as exc:
                 await session.rollback()
-                raise AdminAlreadyExistsError from exc
+                if commit_started and get_constraint_name(exc) == EMAIL_UNIQUE_CONSTRAINT:
+                    raise AdminAlreadyExistsError from exc
+                raise
             except Exception:
                 await session.rollback()
                 raise

@@ -1,24 +1,88 @@
+import os
 import sys
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_CHARACTER = chr(0xB7)
+IGNORED_DIRECTORIES = frozenset(
+    {
+        ".cache",
+        ".git",
+        ".mypy_cache",
+        ".nox",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".superpowers",
+        ".tox",
+        ".uv-cache",
+        ".venv",
+        ".worktrees",
+        "__pycache__",
+        "build",
+        "dist",
+        "htmlcov",
+        "node_modules",
+        "venv",
+    }
+)
 
 
-def find_violations(root: Path = REPOSITORY_ROOT) -> list[tuple[Path, int]]:
-    violations: list[tuple[Path, int]] = []
-    for path in sorted(root.rglob("*.md")):
-        for line_number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
-            if FORBIDDEN_CHARACTER in line:
-                violations.append((path.relative_to(root), line_number))
-    return violations
+@dataclass(frozen=True)
+class Diagnostic:
+    path: Path
+    line: int | None
+    kind: Literal["forbidden-character", "read-error"]
 
 
-def main() -> int:
-    violations = find_violations()
-    for path, line_number in violations:
-        print(f"{path}:{line_number}: forbidden documentation character", file=sys.stderr)
-    return 1 if violations else 0
+def scan_documentation(root: Path = REPOSITORY_ROOT) -> list[Diagnostic]:
+    root = root.resolve()
+    diagnostics: list[Diagnostic] = []
+    for current, directory_names, file_names in os.walk(root, followlinks=False):
+        current_path = Path(current)
+        directory_names[:] = sorted(
+            name
+            for name in directory_names
+            if name not in IGNORED_DIRECTORIES and not (current_path / name).is_symlink()
+        )
+        for name in sorted(file_names):
+            path = current_path / name
+            if path.suffix.lower() != ".md" or path.is_symlink():
+                continue
+            relative_path = path.relative_to(root)
+            try:
+                contents = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                diagnostics.append(Diagnostic(path=relative_path, line=None, kind="read-error"))
+                continue
+            diagnostics.extend(
+                Diagnostic(
+                    path=relative_path,
+                    line=line_number,
+                    kind="forbidden-character",
+                )
+                for line_number, line in enumerate(contents.splitlines(), start=1)
+                if FORBIDDEN_CHARACTER in line
+            )
+    return diagnostics
+
+
+def main(root: Path = REPOSITORY_ROOT) -> int:
+    diagnostics = scan_documentation(root)
+    for diagnostic in diagnostics:
+        location = (
+            f"{diagnostic.path}:{diagnostic.line}"
+            if diagnostic.line is not None
+            else str(diagnostic.path)
+        )
+        message = (
+            "forbidden documentation character"
+            if diagnostic.kind == "forbidden-character"
+            else "unable to read Markdown as UTF-8"
+        )
+        print(f"{location}: {message}", file=sys.stderr)
+    return 1 if diagnostics else 0
 
 
 if __name__ == "__main__":

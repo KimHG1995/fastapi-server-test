@@ -5,6 +5,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import AppError
+from app.db.errors import get_constraint_name
 from app.modules.products.models import Product
 from app.modules.products.repository import ProductRepository
 from app.modules.products.schemas import (
@@ -15,30 +16,6 @@ from app.modules.products.schemas import (
 )
 
 SKU_UNIQUE_CONSTRAINT = "uq_products_sku"
-
-
-def _constraint_name(error: IntegrityError) -> str | None:
-    pending: list[BaseException] = [error.orig] if isinstance(error.orig, BaseException) else []
-    visited: set[int] = set()
-    while pending:
-        current = pending.pop()
-        identity = id(current)
-        if identity in visited:
-            continue
-        visited.add(identity)
-
-        constraint_name = getattr(current, "constraint_name", None)
-        if isinstance(constraint_name, str):
-            return constraint_name
-
-        for linked_error in (
-            getattr(current, "orig", None),
-            current.__cause__,
-            current.__context__,
-        ):
-            if isinstance(linked_error, BaseException):
-                pending.append(linked_error)
-    return None
 
 
 class SkuAlreadyExistsError(AppError):
@@ -90,7 +67,7 @@ class ProductService:
             await self._session.commit()
         except IntegrityError as exc:
             await self._session.rollback()
-            if _constraint_name(exc) == SKU_UNIQUE_CONSTRAINT:
+            if get_constraint_name(exc) == SKU_UNIQUE_CONSTRAINT:
                 raise SkuAlreadyExistsError from exc
             raise
         except Exception:

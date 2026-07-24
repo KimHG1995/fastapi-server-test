@@ -12,6 +12,19 @@ from app.core.security import verify_password_async
 from app.modules.users.models import User, UserRole
 
 
+class _DriverConstraintViolation(Exception):
+    def __init__(self, constraint_name: str) -> None:
+        super().__init__("driver constraint violation")
+        self.constraint_name = constraint_name
+
+
+def _integrity_error(constraint_name: str) -> IntegrityError:
+    driver_error = _DriverConstraintViolation(constraint_name)
+    adapter_error = RuntimeError("asyncpg adapter integrity error")
+    adapter_error.__cause__ = driver_error
+    return IntegrityError("insert", {}, adapter_error)
+
+
 @pytest.fixture
 def cli_sessionmaker(
     migrated_database: AsyncEngine,
@@ -86,7 +99,7 @@ async def test_create_admin_rolls_back_race_and_disposes_engine(
     session = AsyncMock()
     session.add = MagicMock()
     session.scalar.return_value = None
-    session.commit.side_effect = IntegrityError("insert", {}, Exception("duplicate"))
+    session.commit.side_effect = _integrity_error("uq_users_email")
 
     class SessionContext:
         async def __aenter__(self) -> AsyncSession:
@@ -115,6 +128,59 @@ async def test_create_admin_rolls_back_race_and_disposes_engine(
     session.commit.assert_awaited_once()
     session.rollback.assert_awaited_once()
     engine.dispose.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("failure_stage", "constraint_name"),
+    [
+        ("select", "uq_users_email"),
+        ("select", "fk_unrelated_constraint"),
+        ("commit", "fk_unrelated_constraint"),
+    ],
+)
+async def test_create_admin_propagates_non_email_integrity_error_and_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+    test_settings: Settings,
+    failure_stage: str,
+    constraint_name: str,
+) -> None:
+    integrity_error = _integrity_error(constraint_name)
+    engine = AsyncMock()
+    session = AsyncMock()
+    session.add = MagicMock()
+    session.scalar.return_value = None
+    if failure_stage == "select":
+        session.scalar.side_effect = integrity_error
+    else:
+        session.commit.side_effect = integrity_error
+
+    class SessionContext:
+        async def __aenter__(self) -> AsyncSession:
+            return session
+
+        async def __aexit__(self, *args: object) -> None:
+            return None
+
+    monkeypatch.setattr(cli, "get_settings", lambda: test_settings)
+    monkeypatch.setattr(
+        cli,
+        "create_engine_and_sessionmaker",
+        lambda settings: (engine, SessionContext),
+    )
+
+    with pytest.raises(IntegrityError) as raised:
+        await cli.create_admin(
+            "admin@example.com",
+            "Admin",
+            "correct-horse-battery-staple",
+        )
+
+    assert raised.value is integrity_error
+    session.rollback.assert_awaited_once()
+    engine.dispose.assert_awaited_once()
+    if failure_stage == "select":
+        session.add.assert_not_called()
+        session.commit.assert_not_awaited()
 
 
 async def test_invalid_password_is_not_exposed_or_connected(
