@@ -36,6 +36,17 @@ class AuthRepository:
         await self._session.flush()
         return refresh_token
 
+    async def get_refresh_identity(self, token_hash: str) -> tuple[UUID, UUID] | None:
+        result = await self._session.execute(
+            select(RefreshToken.user_id, RefreshToken.family_id).where(
+                RefreshToken.token_hash == token_hash
+            )
+        )
+        row = result.one_or_none()
+        if row is None:
+            return None
+        return row[0], row[1]
+
     async def get_refresh_for_update(self, token_hash: str) -> RefreshToken | None:
         statement = (
             select(RefreshToken)

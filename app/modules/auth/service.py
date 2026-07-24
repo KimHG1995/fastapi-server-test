@@ -8,6 +8,7 @@ from app.core.config import Settings
 from app.core.errors import AppError
 from app.core.security import (
     DUMMY_PASSWORD_HASH,
+    AuthenticationError,
     create_access_token,
     generate_refresh_token,
     hash_password_async,
@@ -148,19 +149,15 @@ class AuthService:
         token_pair: TokenPair | None = None
 
         async with self._session.begin():
-            current = await self._repository.get_refresh_for_update(token_hash)
+            user, current = await self._lock_refresh_owner_and_token(token_hash)
             now = datetime.now(UTC)
-            if current is None or current.expires_at <= now:
+            if current.expires_at <= now or not user.is_active:
                 raise InvalidRefreshTokenError
 
             if current.revoked_at is not None:
                 await self._repository.revoke_family(current.family_id, now)
                 reused = True
             else:
-                user = await self._repository.get_user_for_update(current.user_id)
-                if user is None or not user.is_active:
-                    raise InvalidRefreshTokenError
-
                 raw_replacement = generate_refresh_token()
                 replacement = RefreshToken(
                     user_id=current.user_id,
@@ -186,9 +183,7 @@ class AuthService:
     async def logout(self, request: RefreshTokenRequest) -> LogoutResult:
         token_hash = hash_refresh_token(request.refresh_token)
         async with self._session.begin():
-            current = await self._repository.get_refresh_for_update(token_hash)
-            if current is None:
-                raise InvalidRefreshTokenError
+            _, current = await self._lock_refresh_owner_and_token(token_hash)
             if current.revoked_at is None:
                 current.revoked_at = datetime.now(UTC)
         return LogoutResult()
@@ -196,9 +191,32 @@ class AuthService:
     async def logout_all(self, user_id: UUID) -> LogoutResult:
         now = datetime.now(UTC)
         try:
+            user = await self._repository.get_user_for_update(user_id)
+            if user is None or not user.is_active:
+                raise AuthenticationError
             await self._repository.revoke_all_for_user(user_id, now)
             await self._session.commit()
         except Exception:
             await self._session.rollback()
             raise
         return LogoutResult()
+
+    async def _lock_refresh_owner_and_token(
+        self,
+        token_hash: str,
+    ) -> tuple[User, RefreshToken]:
+        identity = await self._repository.get_refresh_identity(token_hash)
+        if identity is None:
+            raise InvalidRefreshTokenError
+        expected_user_id, expected_family_id = identity
+
+        user = await self._repository.get_user_for_update(expected_user_id)
+        current = await self._repository.get_refresh_for_update(token_hash)
+        if (
+            user is None
+            or current is None
+            or current.user_id != expected_user_id
+            or current.family_id != expected_family_id
+        ):
+            raise InvalidRefreshTokenError
+        return user, current
