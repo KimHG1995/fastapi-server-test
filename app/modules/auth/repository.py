@@ -16,7 +16,12 @@ class AuthRepository:
         return result.scalar_one_or_none()
 
     async def get_user_for_update(self, user_id: UUID) -> User | None:
-        statement = select(User).where(User.id == user_id).with_for_update()
+        statement = (
+            select(User)
+            .where(User.id == user_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
         result = await self._session.execute(statement)
         return result.scalar_one_or_none()
 
