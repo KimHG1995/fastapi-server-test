@@ -27,8 +27,16 @@ class LoginRequest(BaseModel):
         return value.strip() if isinstance(value, str) else value
 
 
+class RefreshTokenRequest(BaseModel):
+    refresh_token: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+
+
 class TokenPair(BaseModel):
     access_token: str
     refresh_token: str
     token_type: Literal["bearer"] = "bearer"  # noqa: S105
     expires_in: int
+
+
+class LogoutResult(BaseModel):
+    logged_out: Literal[True] = True

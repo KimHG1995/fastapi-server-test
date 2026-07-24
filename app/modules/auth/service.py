@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,7 +16,13 @@ from app.core.security import (
 )
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.repository import AuthRepository
-from app.modules.auth.schemas import LoginRequest, RegisterRequest, TokenPair
+from app.modules.auth.schemas import (
+    LoginRequest,
+    LogoutResult,
+    RefreshTokenRequest,
+    RegisterRequest,
+    TokenPair,
+)
 from app.modules.users.models import User, UserRole
 from app.modules.users.schemas import UserRead
 
@@ -40,6 +47,28 @@ class InvalidCredentialsError(AppError):
             detail="Email or password is invalid.",
             type_slug="invalid-credentials",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+class InvalidRefreshTokenError(AppError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="INVALID_REFRESH_TOKEN",
+            status_code=401,
+            title="Unauthorized",
+            detail="Refresh token is invalid or expired.",
+            type_slug="invalid-refresh-token",
+        )
+
+
+class RefreshTokenReusedError(AppError):
+    def __init__(self) -> None:
+        super().__init__(
+            code="REFRESH_TOKEN_REUSED",
+            status_code=401,
+            title="Unauthorized",
+            detail="Refresh token reuse was detected.",
+            type_slug="refresh-token-reused",
         )
 
 
@@ -112,3 +141,64 @@ class AuthService:
                 refresh_token=raw_refresh_token,
                 expires_in=self._settings.access_token_ttl_minutes * 60,
             )
+
+    async def refresh(self, request: RefreshTokenRequest) -> TokenPair:
+        token_hash = hash_refresh_token(request.refresh_token)
+        reused = False
+        token_pair: TokenPair | None = None
+
+        async with self._session.begin():
+            current = await self._repository.get_refresh_for_update(token_hash)
+            now = datetime.now(UTC)
+            if current is None or current.expires_at <= now:
+                raise InvalidRefreshTokenError
+
+            if current.revoked_at is not None:
+                await self._repository.revoke_family(current.family_id, now)
+                reused = True
+            else:
+                user = await self._repository.get_user_for_update(current.user_id)
+                if user is None or not user.is_active:
+                    raise InvalidRefreshTokenError
+
+                raw_replacement = generate_refresh_token()
+                replacement = RefreshToken(
+                    user_id=current.user_id,
+                    family_id=current.family_id,
+                    token_hash=hash_refresh_token(raw_replacement),
+                    expires_at=now + timedelta(days=self._settings.refresh_token_ttl_days),
+                )
+                await self._repository.add_refresh_token(replacement)
+                current.revoked_at = now
+                current.replaced_by_id = replacement.id
+                token_pair = TokenPair(
+                    access_token=create_access_token(user, self._settings, now=now),
+                    refresh_token=raw_replacement,
+                    expires_in=self._settings.access_token_ttl_minutes * 60,
+                )
+
+        if reused:
+            raise RefreshTokenReusedError
+        if token_pair is None:
+            raise RuntimeError("Refresh rotation completed without a token pair")
+        return token_pair
+
+    async def logout(self, request: RefreshTokenRequest) -> LogoutResult:
+        token_hash = hash_refresh_token(request.refresh_token)
+        async with self._session.begin():
+            current = await self._repository.get_refresh_for_update(token_hash)
+            if current is None:
+                raise InvalidRefreshTokenError
+            if current.revoked_at is None:
+                current.revoked_at = datetime.now(UTC)
+        return LogoutResult()
+
+    async def logout_all(self, user_id: UUID) -> LogoutResult:
+        now = datetime.now(UTC)
+        try:
+            await self._repository.revoke_all_for_user(user_id, now)
+            await self._session.commit()
+        except Exception:
+            await self._session.rollback()
+            raise
+        return LogoutResult()
