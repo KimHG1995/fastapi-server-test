@@ -1,6 +1,4 @@
-import re
 from pathlib import Path
-from urllib.parse import unquote
 
 from scripts import check_docs
 
@@ -10,7 +8,6 @@ SUPPORTING_DOCUMENTS = (
     REPOSITORY_ROOT / "docs" / "architecture.md",
     REPOSITORY_ROOT / "docs" / "node-python-runtime.md",
 )
-MARKDOWN_LINK = re.compile(r"!?\[[^\]]*]\(([^)]+)\)")
 
 
 def test_readme_covers_the_runtime_contract_and_frontend_workflow() -> None:
@@ -61,40 +58,98 @@ def test_documented_commands_match_repository_entry_points() -> None:
 
 
 def test_every_local_markdown_link_points_to_an_existing_target() -> None:
-    documents = (README, *SUPPORTING_DOCUMENTS)
-    missing: list[str] = []
-
-    for document in documents:
-        contents = document.read_text(encoding="utf-8")
-        for raw_target in MARKDOWN_LINK.findall(contents):
-            target = raw_target.strip().split(maxsplit=1)[0].strip("<>")
-            if target.startswith(("http://", "https://", "mailto:", "#")):
-                continue
-            target_path = unquote(target.split("#", maxsplit=1)[0])
-            if not (document.parent / target_path).resolve().exists():
-                missing.append(f"{document.relative_to(REPOSITORY_ROOT)} -> {target}")
-
-    assert missing == []
+    assert all(document.is_file() for document in (README, *SUPPORTING_DOCUMENTS))
+    assert check_docs.scan_documentation(REPOSITORY_ROOT) == []
 
 
-def test_documentation_checker_reports_missing_local_markdown_links(tmp_path: Path) -> None:
+def test_architecture_documents_actual_middleware_request_order() -> None:
+    architecture = SUPPORTING_DOCUMENTS[0].read_text(encoding="utf-8")
+
+    request_context = architecture.index("-> RequestContextMiddleware")
+    cors = architecture.index("-> CORS")
+
+    assert request_context < cors
+
+
+def test_documentation_checker_supports_markdown_link_forms_and_anchors(
+    tmp_path: Path,
+) -> None:
     docs = tmp_path / "docs"
     docs.mkdir()
-    (tmp_path / "existing.md").write_text("# Existing\n", encoding="utf-8")
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "diagram(one).png").write_bytes(b"image")
+    (tmp_path / "README.md").write_text("# Overview\n", encoding="utf-8")
+    (docs / "file with spaces.md").write_text(
+        "# Encoded heading (v2)\n",
+        encoding="utf-8",
+    )
+    (docs / "reference.md").write_text("# Reference heading\n", encoding="utf-8")
     (docs / "guide.md").write_text(
         "\n".join(
             (
-                "[valid](../existing.md)",
-                "[missing](missing.md)",
-                "[remote](https://fastapi.tiangolo.com/)",
-                "[heading](#local-heading)",
+                "# Local heading",
+                "[same](#local-heading)",
+                "[cross](../README.md#overview)",
+                "[angle](<file with spaces.md#encoded-heading-v2>)",
+                "[encoded](file%20with%20spaces.md#encoded-heading-v2)",
+                "[encoded fragment](reference.md#reference%2Dheading)",
+                "![inline image](../assets/diagram(one).png)",
+                "[reference link][reference]",
+                "![reference image][image]",
+                "[http](http://example.com/a_(b))",
+                "[https](https://example.com)",
+                "[mail](mailto:learner@example.com)",
+                "[data](data:image/png;base64,AAAA)",
+                "[ftp](ftp://example.com/file.txt)",
+                "",
+                "[reference]: reference.md#reference-heading",
+                "[image]: ../assets/diagram(one).png",
             )
-        ),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert check_docs.scan_documentation(tmp_path) == []
+
+
+def test_documentation_checker_reports_missing_files_references_and_anchors(
+    tmp_path: Path,
+) -> None:
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "target.md").write_text("# Existing heading\n", encoding="utf-8")
+    (docs / "guide.md").write_text(
+        "\n".join(
+            (
+                "# Guide",
+                "[same anchor](#missing-heading)",
+                "[cross anchor](target.md#missing-heading)",
+                "![missing image](missing.png)",
+                "[missing reference][unknown]",
+            )
+        )
+        + "\n",
         encoding="utf-8",
     )
 
     diagnostics = check_docs.scan_documentation(tmp_path)
 
     assert [(item.path.as_posix(), item.line, item.kind) for item in diagnostics] == [
-        ("docs/guide.md", 2, "broken-local-link")
+        ("docs/guide.md", 2, "broken-local-link"),
+        ("docs/guide.md", 3, "broken-local-link"),
+        ("docs/guide.md", 4, "broken-local-link"),
+        ("docs/guide.md", 5, "broken-local-link"),
     ]
+
+
+def test_documentation_checker_returns_nonzero_for_broken_anchor(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "# Existing\n\n[broken](#missing)\n",
+        encoding="utf-8",
+    )
+
+    assert check_docs.main(tmp_path) == 1

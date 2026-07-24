@@ -151,12 +151,11 @@ class AuthService:
         async with self._session.begin():
             user, current = await self._lock_refresh_owner_and_token(token_hash)
             now = datetime.now(UTC)
-            if current.expires_at <= now or not user.is_active:
-                raise InvalidRefreshTokenError
-
             if current.revoked_at is not None:
                 await self._repository.revoke_family(current.family_id, now)
                 reused = True
+            elif current.expires_at <= now or not user.is_active:
+                raise InvalidRefreshTokenError
             else:
                 raw_replacement = generate_refresh_token()
                 replacement = RefreshToken(

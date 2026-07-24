@@ -1,9 +1,11 @@
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, EmailStr, StringConstraints, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
 
 
 class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: Annotated[str, StringConstraints(min_length=12, max_length=128)]
     display_name: Annotated[
@@ -18,6 +20,8 @@ class RegisterRequest(BaseModel):
 
 
 class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     email: EmailStr
     password: str
 
@@ -28,6 +32,8 @@ class LoginRequest(BaseModel):
 
 
 class RefreshTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     refresh_token: Annotated[str, StringConstraints(min_length=1, max_length=512)]
 
 

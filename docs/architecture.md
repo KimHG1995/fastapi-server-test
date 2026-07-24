@@ -115,8 +115,8 @@ API 컨테이너는 시작할 때 마이그레이션을 암묵적으로 수행�
 
 ```text
 HTTP 요청
-  -> CORS 미들웨어
   -> RequestContextMiddleware, trace_id 생성 또는 전달
+  -> CORS 미들웨어
   -> FastAPI 라우터
   -> Pydantic 요청 검증
   -> 인증과 역할 의존성

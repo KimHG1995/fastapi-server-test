@@ -199,6 +199,65 @@ async def test_reusing_rotated_token_revokes_every_token_in_family(
     assert all(row.token_hash != replacement_pair.refresh_token for row in family_rows)
 
 
+async def test_reusing_revoked_token_after_expiry_still_revokes_active_family_token(
+    migrated_database: AsyncEngine,
+    test_settings: Settings,
+) -> None:
+    session_factory = async_sessionmaker(migrated_database, expire_on_commit=False)
+    family_id = uuid4()
+    expired_reused_raw = "expired-revoked-family-token"
+    active_raw = "newer-active-family-token"
+    now = datetime.now(UTC)
+
+    async with session_factory() as setup_session:
+        async with setup_session.begin():
+            user = User(
+                email="expired-reuse@example.com",
+                password_hash=hash_password("correct-horse-battery-staple"),
+                display_name="Expired Reuse",
+                role=UserRole.USER,
+                is_active=True,
+            )
+            setup_session.add(user)
+            await setup_session.flush()
+            setup_session.add_all(
+                [
+                    RefreshToken(
+                        user_id=user.id,
+                        family_id=family_id,
+                        token_hash=hash_refresh_token(expired_reused_raw),
+                        expires_at=now - timedelta(seconds=1),
+                        revoked_at=now - timedelta(days=1),
+                    ),
+                    RefreshToken(
+                        user_id=user.id,
+                        family_id=family_id,
+                        token_hash=hash_refresh_token(active_raw),
+                        expires_at=now + timedelta(days=30),
+                    ),
+                ]
+            )
+
+    async with session_factory() as session:
+        with pytest.raises(AppError) as raised:
+            await AuthService(session, test_settings).refresh(
+                RefreshTokenRequest(refresh_token=expired_reused_raw)
+            )
+
+    assert raised.value.code == "REFRESH_TOKEN_REUSED"
+    assert raised.value.status_code == 401
+
+    async with session_factory() as assertion_session:
+        family_rows = (
+            await assertion_session.scalars(
+                select(RefreshToken).where(RefreshToken.family_id == family_id)
+            )
+        ).all()
+
+    assert len(family_rows) == 2
+    assert all(row.revoked_at is not None for row in family_rows)
+
+
 @pytest.mark.parametrize(
     ("raw_token", "expires_at"),
     [

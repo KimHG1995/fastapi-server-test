@@ -139,6 +139,7 @@
         "type": "object"
       },
       "LoginRequest": {
+        "additionalProperties": false,
         "properties": {
           "email": {
             "format": "email",
@@ -534,6 +535,7 @@
         "type": "object"
       },
       "RefreshTokenRequest": {
+        "additionalProperties": false,
         "properties": {
           "refresh_token": {
             "maxLength": 512,
@@ -549,6 +551,7 @@
         "type": "object"
       },
       "RegisterRequest": {
+        "additionalProperties": false,
         "properties": {
           "display_name": {
             "maxLength": 80,

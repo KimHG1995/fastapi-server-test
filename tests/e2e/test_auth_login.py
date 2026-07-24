@@ -1,3 +1,4 @@
+import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.core.config import Settings
@@ -67,6 +68,41 @@ async def test_duplicate_registration_returns_email_conflict(
     assert duplicate.status_code == 409
     assert duplicate.headers["content-type"].startswith("application/problem+json")
     assert duplicate.json()["code"] == "EMAIL_ALREADY_EXISTS"
+
+
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/api/v1/auth/register", {**REGISTER_BODY, "unexpected": True}),
+        (
+            "/api/v1/auth/login",
+            {
+                "email": "learner@example.com",
+                "password": "correct-horse-battery-staple",
+                "unexpected": True,
+            },
+        ),
+        (
+            "/api/v1/auth/refresh",
+            {"refresh_token": "syntactically-valid-token", "unexpected": True},
+        ),
+        (
+            "/api/v1/auth/logout",
+            {"refresh_token": "syntactically-valid-token", "unexpected": True},
+        ),
+    ],
+)
+async def test_auth_endpoints_reject_unexpected_request_fields(
+    client: AsyncClient,
+    path: str,
+    body: dict[str, object],
+) -> None:
+    response = await client.post(path, json=body)
+
+    assert response.status_code == 422
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "VALIDATION_FAILED"
+    assert response.json()["errors"][0]["field"] == "body.unexpected"
 
 
 async def test_unknown_email_and_bad_password_return_same_public_error(
