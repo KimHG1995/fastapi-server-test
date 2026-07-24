@@ -48,32 +48,40 @@ async def migrated_database(postgresql_url: str) -> AsyncIterator[AsyncEngine]:
         postgresql_url,
         isolation_level="AUTOCOMMIT",
     )
-
-    async with administration_engine.connect() as connection:
-        await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
-
-    settings = Settings(
-        _env_file=None,
-        APP_ENV="test",
-        DATABASE_URL=postgresql_url,
-        JWT_SECRET=SecretStr("x" * 32),
-    )
-    alembic_config = Config("alembic.ini")
-    alembic_config.attributes["settings"] = settings
-    alembic_config.attributes["schema"] = schema
-    await asyncio.to_thread(command.upgrade, alembic_config, "head")
-
-    engine = create_async_engine(
-        postgresql_url,
-        connect_args={"server_settings": {"search_path": schema}},
-    )
+    engine: AsyncEngine | None = None
+    schema_created = False
     try:
+        async with administration_engine.connect() as connection:
+            await connection.execute(text(f'CREATE SCHEMA "{schema}"'))
+            schema_created = True
+
+        engine = create_async_engine(
+            postgresql_url,
+            connect_args={"server_settings": {"search_path": schema}},
+        )
+        settings = Settings(
+            _env_file=None,
+            APP_ENV="test",
+            DATABASE_URL=postgresql_url,
+            JWT_SECRET=SecretStr("x" * 32),
+        )
+        alembic_config = Config("alembic.ini")
+        alembic_config.attributes["settings"] = settings
+        alembic_config.attributes["schema"] = schema
+        await asyncio.to_thread(command.upgrade, alembic_config, "head")
+
         yield engine
     finally:
-        await engine.dispose()
-        async with administration_engine.connect() as connection:
-            await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
-        await administration_engine.dispose()
+        try:
+            if engine is not None:
+                await engine.dispose()
+        finally:
+            try:
+                if schema_created:
+                    async with administration_engine.connect() as connection:
+                        await connection.execute(text(f'DROP SCHEMA "{schema}" CASCADE'))
+            finally:
+                await administration_engine.dispose()
 
 
 @pytest_asyncio.fixture

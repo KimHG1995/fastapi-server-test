@@ -1,12 +1,12 @@
 from datetime import datetime
 
-from sqlalchemy import TIMESTAMP, func
+from sqlalchemy import TIMESTAMP, MetaData, func
 from sqlalchemy.ext.asyncio import AsyncAttrs
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(AsyncAttrs, DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention={"pk": "pk_%(table_name)s"})
 
 
 class UtcTimestampMixin:
