@@ -68,6 +68,14 @@ def configure_problem_openapi(app: FastAPI) -> None:
         schema = default_openapi()
         components = cast(dict[str, Any], schema.setdefault("components", {}))
         schemas = cast(dict[str, Any], components.setdefault("schemas", {}))
+        security_schemes = cast(
+            dict[str, Any],
+            components.setdefault("securitySchemes", {}),
+        )
+        security_schemes.setdefault(
+            "HTTPBearer",
+            {"type": "http", "scheme": "bearer", "bearerFormat": "JWT"},
+        )
         problem_schema = ProblemDetail.model_json_schema(
             ref_template="#/components/schemas/{model}"
         )
