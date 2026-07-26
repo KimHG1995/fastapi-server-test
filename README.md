@@ -61,14 +61,13 @@ pydantic-settings를 통해 이 파일을 읽는다. Secret 값은 일반 서비
 
 ```bash
 docker compose build api
-docker compose up -d postgres
-docker compose run --rm migrate
 docker compose up api
 ```
 
-마이그레이션은 의도적으로 API 시작과 분리되어 있다. 새 스키마가 필요할 때
-`docker compose run --rm migrate`를 먼저 실행한다. `api` 서비스는 스키마를
-암묵적으로 변경하지 않는다.
+마이그레이션은 API 명령에 포함되지 않고 별도의 일회성 `migrate` 서비스가
+담당한다. `docker compose up api`는 PostgreSQL이 준비된 뒤 `migrate`가 성공한
+경우에만 API를 시작한다. 마이그레이션에 실패하면 API도 시작하지 않는다. 새
+스키마만 명시적으로 적용하려면 `docker compose run --rm migrate`를 실행한다.
 
 백그라운드로 실행하려면 마지막 명령에 `-d`를 추가한다.
 
@@ -97,7 +96,8 @@ POSTGRES_PORT=15432
 
 이후 API는 `http://localhost:18000`에서 접근한다. 컨테이너 사이에서는 계속
 `postgres:5432`를 사용하므로 `COMPOSE_DATABASE_URL`을 호스트 주소로 바꾸지
-않는다.
+않는다. 개발용 PostgreSQL 포트는 기본값과 변경된 포트 모두
+`127.0.0.1`에만 게시되므로 다른 호스트에서 직접 접속할 수 없다.
 
 ### 종료
 
@@ -198,7 +198,8 @@ docker compose run --rm api uv run python -m app.cli create-admin \
 | `DELETE` | `/api/v1/products/{product_id}` | Bearer | `ADMIN` 소프트 삭제 |
 
 상품 목록은 `page`, `page_size`, `query`, `sort`, `order` 쿼리를 지원한다.
-`page_size`는 최대 100이며 `sort`는 `created_at`, `name`,
+`page`는 최대 10,000, `page_size`는 최대 100이며 이 범위를 넘으면 422
+검증 오류를 반환한다. `sort`는 `created_at`, `name`,
 `price_in_minor_units`, `sku` 중 하나다.
 
 ### 가입과 로그인 예시
@@ -383,7 +384,7 @@ uv sync --extra dev
 uv run pytest
 uv run ruff check .
 uv run ruff format --check .
-uv run mypy app tests
+uv run mypy app tests scripts
 uv run --extra dev python scripts/check_docs.py
 uv run python scripts/export_openapi.py
 ```

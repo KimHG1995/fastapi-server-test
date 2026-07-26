@@ -1,9 +1,12 @@
 import asyncio
 import hashlib
 import secrets
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from threading import Lock
 from typing import Literal
 from uuid import UUID, uuid4
+from weakref import WeakKeyDictionary
 
 import jwt
 from jwt.exceptions import PyJWTError
@@ -15,7 +18,13 @@ from app.core.errors import AppError
 from app.modules.users.models import User, UserRole
 
 ALGORITHM = "HS256"
+_PASSWORD_WORK_CONCURRENCY = 2
 _PASSWORD_HASH = PasswordHash.recommended()
+_PASSWORD_WORK_LIMITERS: WeakKeyDictionary[
+    asyncio.AbstractEventLoop,
+    asyncio.Semaphore,
+] = WeakKeyDictionary()
+_PASSWORD_WORK_LIMITERS_LOCK = Lock()
 DUMMY_PASSWORD_HASH = _PASSWORD_HASH.hash("dummy-password-used-for-login-timing")
 
 
@@ -48,12 +57,31 @@ def verify_password(password: str, password_hash: str) -> bool:
     return _PASSWORD_HASH.verify(password, password_hash)
 
 
+def _get_password_work_limiter() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    with _PASSWORD_WORK_LIMITERS_LOCK:
+        limiter = _PASSWORD_WORK_LIMITERS.get(loop)
+        if limiter is None:
+            limiter = asyncio.Semaphore(_PASSWORD_WORK_CONCURRENCY)
+            _PASSWORD_WORK_LIMITERS[loop] = limiter
+        return limiter
+
+
+async def _run_password_work[**P, R](
+    function: Callable[P, R],
+    *args: P.args,
+    **kwargs: P.kwargs,
+) -> R:
+    async with _get_password_work_limiter():
+        return await asyncio.to_thread(function, *args, **kwargs)
+
+
 async def hash_password_async(password: str) -> str:
-    return await asyncio.to_thread(hash_password, password)
+    return await _run_password_work(hash_password, password)
 
 
 async def verify_password_async(password: str, password_hash: str) -> bool:
-    return await asyncio.to_thread(verify_password, password, password_hash)
+    return await _run_password_work(verify_password, password, password_hash)
 
 
 def create_access_token(

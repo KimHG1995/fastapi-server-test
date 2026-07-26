@@ -1,3 +1,4 @@
+import asyncio
 import base64
 import hashlib
 from collections.abc import Callable
@@ -74,6 +75,91 @@ async def test_async_password_helpers_offload_cpu_work_to_a_thread(
         (hash_password, ("correct-horse-battery-staple",)),
         (verify_password, ("correct-horse-battery-staple", encoded)),
     ]
+
+
+async def test_async_password_work_never_exceeds_two_concurrent_operations(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    active = 0
+    peak = 0
+    two_started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fake_to_thread(
+        function: Callable[..., object],
+        *args: object,
+        **kwargs: Any,
+    ) -> object:
+        nonlocal active, peak
+        assert not kwargs
+        active += 1
+        peak = max(peak, active)
+        if active >= 2:
+            two_started.set()
+        try:
+            await release.wait()
+            return "encoded-password" if function is hash_password else True
+        finally:
+            active -= 1
+
+    monkeypatch.setattr("app.core.security.asyncio.to_thread", fake_to_thread)
+    tasks = [
+        asyncio.create_task(hash_password_async("first-password")),
+        asyncio.create_task(verify_password_async("second-password", "encoded-second-password")),
+        asyncio.create_task(hash_password_async("third-password")),
+        asyncio.create_task(verify_password_async("fourth-password", "encoded-fourth-password")),
+    ]
+    try:
+        await asyncio.wait_for(two_started.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert peak == 2
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+
+
+def test_password_work_capacity_is_isolated_across_event_loops(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    async def run_batch() -> int:
+        active = 0
+        peak = 0
+        two_started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_to_thread(
+            function: Callable[..., object],
+            *args: object,
+            **kwargs: Any,
+        ) -> object:
+            nonlocal active, peak
+            del args, kwargs
+            active += 1
+            peak = max(peak, active)
+            if active >= 2:
+                two_started.set()
+            try:
+                await release.wait()
+                return "encoded-password" if function is hash_password else True
+            finally:
+                active -= 1
+
+        monkeypatch.setattr("app.core.security.asyncio.to_thread", fake_to_thread)
+        tasks = [
+            asyncio.create_task(hash_password_async("first-password")),
+            asyncio.create_task(hash_password_async("second-password")),
+            asyncio.create_task(hash_password_async("third-password")),
+        ]
+        try:
+            await asyncio.wait_for(two_started.wait(), timeout=1)
+            await asyncio.sleep(0)
+            return peak
+        finally:
+            release.set()
+            await asyncio.gather(*tasks)
+
+    assert asyncio.run(run_batch()) == 2
+    assert asyncio.run(run_batch()) == 2
 
 
 def test_access_token_contains_required_claims(test_settings: Settings) -> None:

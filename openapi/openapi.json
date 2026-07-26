@@ -147,6 +147,7 @@
             "type": "string"
           },
           "password": {
+            "maxLength": 128,
             "title": "Password",
             "type": "string"
           }
@@ -971,11 +972,14 @@
         "operationId": "list_products_api_v1_products_get",
         "parameters": [
           {
+            "description": "Page number, capped to prevent abusive deep offsets.",
             "in": "query",
             "name": "page",
             "required": false,
             "schema": {
               "default": 1,
+              "description": "Page number, capped to prevent abusive deep offsets.",
+              "maximum": 10000,
               "minimum": 1,
               "title": "Page",
               "type": "integer"

@@ -23,7 +23,7 @@ class LoginRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     email: EmailStr
-    password: str
+    password: Annotated[str, StringConstraints(max_length=128)]
 
     @field_validator("email", mode="before")
     @classmethod

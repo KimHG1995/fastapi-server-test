@@ -4,11 +4,12 @@ from typing import Any, cast
 from uuid import UUID
 
 import structlog
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.exc import IntegrityError
+from starlette.exceptions import HTTPException
 
 
 class ProblemField(BaseModel):
@@ -122,6 +123,19 @@ def _problem_response(
     )
 
 
+def unexpected_error_response(request: Request, exc: Exception) -> JSONResponse:
+    logger = structlog.get_logger(__name__).bind(trace_id=str(_trace_id(request)))
+    logger.error("unexpected_error", exc_info=exc)
+    return _problem_response(
+        request,
+        code="INTERNAL_SERVER_ERROR",
+        status_code=500,
+        title="Internal Server Error",
+        detail="An unexpected error occurred.",
+        type_slug="internal-server-error",
+    )
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(RequestValidationError)
     async def handle_validation_error(
@@ -185,19 +199,4 @@ def register_exception_handlers(app: FastAPI) -> None:
             title="Conflict",
             detail="The request conflicts with existing data.",
             type_slug="integrity-error",
-        )
-
-    @app.exception_handler(Exception)
-    async def handle_unexpected_error(request: Request, exc: Exception) -> JSONResponse:
-        logger = structlog.get_logger(__name__).bind(trace_id=str(_trace_id(request)))
-        logger.exception("unexpected_error")
-        is_production = request.app.state.settings.app_env == "production"
-        detail = "An unexpected error occurred." if is_production else str(exc)
-        return _problem_response(
-            request,
-            code="INTERNAL_SERVER_ERROR",
-            status_code=500,
-            title="Internal Server Error",
-            detail=detail,
-            type_slug="internal-server-error",
         )

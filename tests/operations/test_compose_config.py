@@ -49,13 +49,21 @@ def test_compose_declares_reproducible_operational_topology() -> None:
         for mount in postgres["volumes"]
     )
     assert "pg_isready" in " ".join(postgres["healthcheck"]["test"])
+    assert len(postgres["ports"]) == 1
+    postgres_port = postgres["ports"][0]
+    assert postgres_port["host_ip"] == "127.0.0.1"
+    assert postgres_port["published"] == "5432"
+    assert postgres_port["target"] == 5432
 
     api = services["api"]
     assert api["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert api["depends_on"]["migrate"]["condition"] == "service_completed_successfully"
     assert "alembic" not in " ".join(api["command"])
 
     migrate = services["migrate"]
     assert "alembic upgrade head" in " ".join(migrate["command"])
+    assert migrate["depends_on"]["postgres"]["condition"] == "service_healthy"
+    assert "migrate" not in migrate["depends_on"]
     assert migrate["restart"] == "no"
 
     assert "change-this-example-secret-to-a-unique-value" not in rendered
@@ -93,6 +101,18 @@ def test_compose_ignores_host_database_url_and_builds_internal_url_from_db_setti
     assert services["api"]["environment"]["DATABASE_URL"] == expected_url
     assert services["migrate"]["environment"]["DATABASE_URL"] == expected_url
     assert "localhost" not in services["api"]["environment"]["DATABASE_URL"]
+
+
+def test_compose_keeps_postgres_loopback_binding_when_host_port_is_overridden() -> None:
+    config, _ = render_compose_config(
+        environment_overrides={"POSTGRES_PORT": "15432"},
+    )
+
+    ports = config["services"]["postgres"]["ports"]
+    assert len(ports) == 1
+    assert ports[0]["host_ip"] == "127.0.0.1"
+    assert ports[0]["published"] == "15432"
+    assert ports[0]["target"] == 5432
 
 
 def test_compose_cli_is_a_required_test_dependency(monkeypatch: MonkeyPatch) -> None:

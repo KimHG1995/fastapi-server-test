@@ -443,3 +443,72 @@ async def test_reuse_racing_with_sibling_rotation_revokes_new_replacement(
 
     assert len(family_rows) == 3
     assert all(row.revoked_at is not None for row in family_rows)
+
+
+async def test_logout_racing_with_rotation_revokes_the_inserted_replacement(
+    migrated_database: AsyncEngine,
+    test_settings: Settings,
+) -> None:
+    session_factory = async_sessionmaker(migrated_database, expire_on_commit=False)
+    raw_token = "refresh-token-logged-out-during-rotation"  # noqa: S105
+    _, original_id = await _persist_refresh_token(session_factory, raw_token)
+    replacement_inserted = asyncio.Event()
+    release_rotation = asyncio.Event()
+    logout_lock_attempted = asyncio.Event()
+
+    async with session_factory() as rotation_session, session_factory() as logout_session:
+        rotation_service = AuthService(
+            rotation_session,
+            test_settings,
+            repository=_PauseAfterReplacementInsert(
+                rotation_session,
+                replacement_inserted,
+                release_rotation,
+            ),
+        )
+        logout_service = AuthService(
+            logout_session,
+            test_settings,
+            repository=_SignalReuseMutationBoundary(
+                logout_session,
+                logout_lock_attempted,
+            ),
+        )
+
+        rotation = asyncio.create_task(
+            rotation_service.refresh(RefreshTokenRequest(refresh_token=raw_token))
+        )
+        await asyncio.wait_for(replacement_inserted.wait(), timeout=5)
+        logout = asyncio.create_task(
+            logout_service.logout(RefreshTokenRequest(refresh_token=raw_token))
+        )
+        await asyncio.wait_for(logout_lock_attempted.wait(), timeout=5)
+        assert not rotation.done()
+        assert not logout.done()
+        release_rotation.set()
+        rotated_pair, logout_result = await asyncio.gather(rotation, logout)
+
+    assert isinstance(rotated_pair, TokenPair)
+    assert logout_result.logged_out is True
+
+    replacement_refresh_error: AppError | None = None
+    async with session_factory() as replacement_session:
+        try:
+            await AuthService(replacement_session, test_settings).refresh(
+                RefreshTokenRequest(refresh_token=rotated_pair.refresh_token)
+            )
+        except AppError as exc:
+            replacement_refresh_error = exc
+
+    async with session_factory() as assertion_session:
+        original = await assertion_session.get(RefreshToken, original_id)
+        assert original is not None
+        family_rows = (
+            await assertion_session.scalars(
+                select(RefreshToken).where(RefreshToken.family_id == original.family_id)
+            )
+        ).all()
+
+    assert replacement_refresh_error is not None
+    assert replacement_refresh_error.code == "REFRESH_TOKEN_REUSED"
+    assert [row for row in family_rows if row.revoked_at is None] == []

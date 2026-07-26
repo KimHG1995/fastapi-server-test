@@ -1,4 +1,5 @@
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -85,16 +86,48 @@ def test_openapi_problem_responses_reference_problem_detail(
     assert found_statuses == {"401", "403", "404", "409", "422"}
 
 
-def test_openapi_export_is_cwd_independent_and_byte_identical(tmp_path: Path) -> None:
+def test_openapi_export_is_cwd_independent_deterministic_and_read_only(
+    tmp_path: Path,
+) -> None:
     repository_root = Path(__file__).resolve().parents[2]
     script = repository_root / "scripts" / "export_openapi.py"
-    target = repository_root / "openapi" / "openapi.json"
+    snapshot = repository_root / "openapi" / "openapi.json"
+    committed = snapshot.read_bytes()
+    first_target = tmp_path / "exports" / "first.json"
+    second_target = tmp_path / "exports" / "second.json"
+    cwd_snapshot = tmp_path / "openapi" / "openapi.json"
+    cwd_snapshot.parent.mkdir()
+    cwd_snapshot.write_bytes(b"stale-openapi-sentinel\n")
 
-    subprocess.run([sys.executable, str(script)], cwd=tmp_path, check=True)  # noqa: S603
-    first = target.read_bytes()
-    subprocess.run([sys.executable, str(script)], cwd=tmp_path, check=True)  # noqa: S603
-    second = target.read_bytes()
+    for target in (first_target, second_target):
+        subprocess.run(  # noqa: S603
+            [sys.executable, str(script), "--output", str(target)],
+            cwd=tmp_path,
+            check=True,
+        )
 
+    first = first_target.read_bytes()
+    second = second_target.read_bytes()
     assert first == second
-    assert first.endswith(b"\n")
-    assert json.loads(first)["openapi"]
+    assert snapshot.read_bytes() == committed
+    assert cwd_snapshot.read_bytes() == b"stale-openapi-sentinel\n"
+    assert first == committed
+    assert committed.endswith(b"\n")
+    assert json.loads(committed)["openapi"]
+
+
+def test_make_verify_gates_tests_on_the_openapi_snapshot() -> None:
+    repository_root = Path(__file__).resolve().parents[2]
+    make = shutil.which("make")
+    assert make is not None
+
+    result = subprocess.run(  # noqa: S603
+        [make, "--dry-run", "verify"],
+        cwd=repository_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    commands = result.stdout
+    assert commands.index("scripts/export_openapi.py --output") < commands.index("uv run pytest -q")

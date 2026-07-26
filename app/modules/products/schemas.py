@@ -13,6 +13,7 @@ from pydantic import (
 )
 
 POSTGRES_INTEGER_MAX = 2_147_483_647
+MAX_PRODUCT_PAGE = 10_000
 
 
 class ProductSortField(StrEnum):
@@ -137,7 +138,12 @@ class ProductRead(BaseModel):
 class ProductListQuery(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    page: int = Field(default=1, ge=1)
+    page: int = Field(
+        default=1,
+        ge=1,
+        le=MAX_PRODUCT_PAGE,
+        description="Page number, capped to prevent abusive deep offsets.",
+    )
     page_size: int = Field(default=20, ge=1, le=100)
     query: Annotated[
         str | None,

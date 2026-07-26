@@ -5,6 +5,7 @@ from typing import cast
 from uuid import UUID, uuid4
 
 import pytest
+from pydantic import ValidationError
 from pytest import MonkeyPatch
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -12,10 +13,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 import app.modules.auth.service as auth_service_module
 from app.core.config import Settings
 from app.core.errors import AppError
-from app.core.security import DUMMY_PASSWORD_HASH, hash_password
+from app.core.security import DUMMY_PASSWORD_HASH, hash_password, hash_refresh_token
 from app.modules.auth.models import RefreshToken
 from app.modules.auth.repository import AuthRepository
-from app.modules.auth.schemas import LoginRequest, RegisterRequest
+from app.modules.auth.schemas import LoginRequest, RefreshTokenRequest, RegisterRequest
 from app.modules.auth.service import AuthService
 from app.modules.users.models import User, UserRole
 
@@ -135,16 +136,19 @@ async def test_registration_normalizes_email_and_always_assigns_user(
         )
     )
 
-    assert repository.lookup_emails == ["new.user@example.com"]
+    assert repository.lookup_emails == [
+        "new.user@example.com",
+        "new.user@example.com",
+    ]
     assert len(repository.added_users) == 1
     assert repository.added_users[0].email == "new.user@example.com"
     assert repository.added_users[0].role is UserRole.USER
     assert result.email == "new.user@example.com"
     assert result.display_name == "New User"
-    assert session.transactions == 1
+    assert session.transactions == 2
 
 
-async def test_registration_hashes_password_before_opening_transaction(
+async def test_registration_hashes_password_between_short_database_transactions(
     test_settings: Settings,
     monkeypatch: MonkeyPatch,
 ) -> None:
@@ -173,13 +177,21 @@ async def test_registration_hashes_password_before_opening_transaction(
 
     assert transaction_states == [False]
     assert repository.added_users[0].password_hash == "offloaded-password-hash"  # noqa: S105
+    assert session.transactions == 2
 
 
-async def test_duplicate_registration_raises_email_already_exists(
+async def test_duplicate_registration_skips_password_hashing_and_raises_email_conflict(
     test_settings: Settings,
+    monkeypatch: MonkeyPatch,
 ) -> None:
     repository = _Repository(_user())
     service, _ = _service(test_settings, repository)
+
+    async def unexpected_hash(password: str) -> str:
+        del password
+        pytest.fail("known duplicate email should be rejected before password hashing")
+
+    monkeypatch.setattr(auth_service_module, "hash_password_async", unexpected_hash)
 
     with pytest.raises(AppError) as raised:
         await service.register(
@@ -192,6 +204,7 @@ async def test_duplicate_registration_raises_email_already_exists(
 
     assert raised.value.code == "EMAIL_ALREADY_EXISTS"
     assert raised.value.status_code == 409
+    assert repository.lookup_emails == ["learner@example.com"]
 
 
 async def test_registration_integrity_race_maps_to_email_conflict(
@@ -243,6 +256,11 @@ async def test_unknown_email_and_bad_password_return_same_error(
     )
     assert unknown.value.code == "INVALID_CREDENTIALS"
     assert unknown.value.status_code == 401
+
+
+def test_login_request_rejects_passwords_longer_than_128_characters() -> None:
+    with pytest.raises(ValidationError):
+        LoginRequest(email="learner@example.com", password="x" * 129)
 
 
 async def test_unknown_email_verifies_module_level_dummy_hash(
@@ -388,3 +406,44 @@ async def test_successful_login_persists_only_refresh_token_hash(
     assert stored.token_hash != result.refresh_token
     assert result.refresh_token not in repr(stored.__dict__)
     assert session.transactions == 2
+
+
+async def test_logout_revokes_known_family_when_presented_token_is_already_revoked(
+    test_settings: Settings,
+) -> None:
+    family_id = uuid4()
+    user = _user()
+    presented_raw = "already-revoked-presented-token"
+    presented = RefreshToken(
+        id=uuid4(),
+        user_id=user.id,
+        family_id=family_id,
+        token_hash=hash_refresh_token(presented_raw),
+        expires_at=datetime.now(UTC),
+        revoked_at=datetime.now(UTC),
+    )
+
+    class _LogoutRepository(_Repository):
+        def __init__(self) -> None:
+            super().__init__(user)
+            self.revoked_families: list[UUID] = []
+
+        async def get_refresh_identity(self, token_hash: str) -> tuple[UUID, UUID] | None:
+            if token_hash == presented.token_hash:
+                return presented.user_id, presented.family_id
+            return None
+
+        async def get_refresh_for_update(self, token_hash: str) -> RefreshToken | None:
+            return presented if token_hash == presented.token_hash else None
+
+        async def revoke_family(self, revoked_family_id: UUID, revoked_at: datetime) -> None:
+            del revoked_at
+            self.revoked_families.append(revoked_family_id)
+
+    repository = _LogoutRepository()
+    service, _ = _service(test_settings, repository)
+
+    result = await service.logout(RefreshTokenRequest(refresh_token=presented_raw))
+
+    assert result.logged_out is True
+    assert repository.revoked_families == [family_id]

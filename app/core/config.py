@@ -7,6 +7,8 @@ from pydantic import AliasChoices, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pydantic_settings.sources import PydanticBaseSettingsSource, SecretsSettingsSource
 
+_PUBLIC_EXAMPLE_JWT_SECRET = "change-this-example-secret-to-a-unique-value"  # noqa: S105 - rejected sentinel
+
 
 class OptionalSecretsSettingsSource(SecretsSettingsSource):
     def __call__(self) -> dict[str, Any]:
@@ -38,10 +40,14 @@ class Settings(BaseSettings):
     jwt_secret: SecretStr = Field(validation_alias=AliasChoices("JWT_SECRET", "jwt_secret"))
     access_token_ttl_minutes: int = Field(
         default=15,
+        ge=1,
+        le=1440,
         validation_alias=AliasChoices("ACCESS_TOKEN_TTL_MINUTES", "access_token_ttl_minutes"),
     )
     refresh_token_ttl_days: int = Field(
         default=30,
+        ge=1,
+        le=365,
         validation_alias=AliasChoices("REFRESH_TOKEN_TTL_DAYS", "refresh_token_ttl_days"),
     )
     cors_origins_raw: str = Field(
@@ -93,8 +99,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_production_secret(self) -> Self:
-        if len(self.jwt_secret.get_secret_value()) < 32:
+        secret = self.jwt_secret.get_secret_value()
+        if len(secret) < 32:
             raise ValueError("JWT_SECRET must contain at least 32 characters")
+        if self.app_env == "production" and secret == _PUBLIC_EXAMPLE_JWT_SECRET:
+            raise ValueError("JWT_SECRET must not use the public example value in production")
         return self
 
 

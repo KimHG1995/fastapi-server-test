@@ -18,6 +18,20 @@ SENSITIVE_VALUE_PATTERN = re.compile(
 DATABASE_URL_PATTERN = re.compile(
     r"\b(?:postgres|postgresql)(?:\+[a-z0-9_-]+)?://[^\s,;]+", re.IGNORECASE
 )
+AUTHORIZATION_VALUE_PATTERN = re.compile(
+    r"(?P<key>authorization)(?P<separator>\s*[=:]\s*)"
+    r"(?:(?:bearer|basic)\s+)?[^\s,;]+",
+    re.IGNORECASE,
+)
+
+
+class RedactingFormatter(logging.Formatter):
+    def __init__(self, formatter: logging.Formatter | None = None) -> None:
+        super().__init__()
+        self.formatter = formatter or logging.Formatter()
+
+    def format(self, record: logging.LogRecord) -> str:
+        return cast(str, _redact_value(self.formatter.format(record)))
 
 
 def redact_sensitive_data(
@@ -33,7 +47,11 @@ def _redact_value(value: object, key: str | None = None) -> object:
     if key is not None and SENSITIVE_KEY_PATTERN.search(key):
         return REDACTED
     if isinstance(value, str):
-        redacted = DATABASE_URL_PATTERN.sub(REDACTED, value)
+        redacted = AUTHORIZATION_VALUE_PATTERN.sub(
+            r"\g<key>\g<separator>[REDACTED]",
+            value,
+        )
+        redacted = DATABASE_URL_PATTERN.sub(REDACTED, redacted)
         return SENSITIVE_VALUE_PATTERN.sub(r"\g<key>\g<separator>[REDACTED]", redacted)
     if isinstance(value, Mapping):
         return {
@@ -46,7 +64,18 @@ def _redact_value(value: object, key: str | None = None) -> object:
     return value
 
 
+def _configure_uvicorn_redaction() -> None:
+    for logger_name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(logger_name)
+        logger.disabled = False
+        for handler in logger.handlers:
+            if not isinstance(handler.formatter, RedactingFormatter):
+                handler.setFormatter(RedactingFormatter(handler.formatter))
+
+
 def configure_logging(log_level: str) -> None:
+    _configure_uvicorn_redaction()
+
     structlog.configure(
         processors=[
             structlog.contextvars.merge_contextvars,

@@ -41,7 +41,8 @@ openapi-check:
 docs-check:
 	uv run --extra dev python scripts/check_docs.py
 
-verify: lock-check lint format typecheck docs-check test openapi-check
+verify: lock-check lint format typecheck docs-check openapi-check
+	$(MAKE) test
 
 docker-config:
 	docker compose config

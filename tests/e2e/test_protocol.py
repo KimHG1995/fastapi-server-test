@@ -10,7 +10,11 @@ from app.main import create_app
 
 @pytest.fixture
 def protocol_app(test_settings: Settings) -> FastAPI:
-    app = create_app(test_settings)
+    app = create_app(
+        test_settings.model_copy(
+            update={"cors_origins": ["https://client.example"]},
+        )
+    )
     router = APIRouter()
 
     @router.get("/api/v1/protocol-example")
@@ -21,7 +25,8 @@ def protocol_app(test_settings: Settings) -> FastAPI:
     async def protocol_error() -> None:
         raise RuntimeError(
             "password=super-secret token=access-token-value "
-            "secret=secret-value postgresql+asyncpg://db-user:db-password@db.example/app"
+            "secret=secret-value Authorization:   bEaReR authorization-token "
+            "postgresql+asyncpg://db-user:db-password@db.example/app"
         )
 
     @router.get("/api/v1/nonstandard-status")
@@ -62,6 +67,41 @@ async def test_validation_failure_uses_problem_json(client: AsyncClient) -> None
     assert response.json()["errors"][0]["field"] == "query.limit"
 
 
+async def test_framework_404_uses_traceable_problem_json(client: AsyncClient) -> None:
+    trace_id = "11111111-1111-4111-8111-111111111111"
+
+    response = await client.get(
+        "/api/v1/does-not-exist",
+        headers={"x-request-id": trace_id},
+    )
+
+    assert response.status_code == 404
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.headers["x-request-id"] == trace_id
+    assert response.json()["status"] == 404
+    assert response.json()["code"] == "HTTP_ERROR"
+    assert response.json()["trace_id"] == trace_id
+
+
+async def test_framework_405_preserves_allow_header_in_problem_json(
+    client: AsyncClient,
+) -> None:
+    trace_id = "11111111-1111-4111-8111-111111111111"
+
+    response = await client.post(
+        "/api/v1/protocol-example",
+        headers={"x-request-id": trace_id},
+    )
+
+    assert response.status_code == 405
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.headers["allow"] == "GET"
+    assert response.headers["x-request-id"] == trace_id
+    assert response.json()["status"] == 405
+    assert response.json()["code"] == "HTTP_ERROR"
+    assert response.json()["trace_id"] == trace_id
+
+
 async def test_unhandled_error_shares_request_id_between_header_and_problem_body(
     client: AsyncClient,
 ) -> None:
@@ -72,6 +112,34 @@ async def test_unhandled_error_shares_request_id_between_header_and_problem_body
     assert response.status_code == 500
     assert response.headers["x-request-id"] == trace_id
     assert response.json()["trace_id"] == trace_id
+    assert response.json()["detail"] == "An unexpected error occurred."
+
+
+async def test_unhandled_error_response_includes_cors_for_allowed_origin(
+    client: AsyncClient,
+) -> None:
+    response = await client.get(
+        "/api/v1/protocol-error",
+        headers={"origin": "https://client.example"},
+    )
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.headers["access-control-allow-origin"] == "https://client.example"
+    assert response.json()["code"] == "INTERNAL_SERVER_ERROR"
+
+
+async def test_unhandled_error_is_converted_without_reraising(
+    protocol_app: FastAPI,
+) -> None:
+    async with AsyncClient(
+        transport=ASGITransport(app=protocol_app, raise_app_exceptions=True),
+        base_url="http://test",
+    ) as strict_client:
+        response = await strict_client.get("/api/v1/protocol-error")
+
+    assert response.status_code == 500
+    assert response.headers["content-type"].startswith("application/problem+json")
 
 
 async def test_unhandled_error_log_is_traceable_and_redacts_sensitive_values(
@@ -82,17 +150,21 @@ async def test_unhandled_error_log_is_traceable_and_redacts_sensitive_values(
 
     response = await client.get("/api/v1/protocol-error", headers={"x-request-id": trace_id})
 
-    captured = capsys.readouterr().out
+    captured = capsys.readouterr()
     assert response.status_code == 500
-    assert trace_id in captured
-    assert "RuntimeError" in captured
-    assert "Traceback" in captured
-    assert "super-secret" not in captured
-    assert "access-token-value" not in captured
-    assert "secret-value" not in captured
-    assert "db-user:db-password" not in captured
-    assert "postgresql+asyncpg://" not in captured
-    assert "db.example/app" not in captured
+    assert captured.out.count('"event": "unexpected_error"') == 1
+    assert trace_id in captured.out
+    assert "RuntimeError" in captured.out
+    assert "Traceback" in captured.out
+    assert "super-secret" not in captured.out
+    assert "access-token-value" not in captured.out
+    assert "secret-value" not in captured.out
+    assert "authorization-token" not in captured.out
+    assert "bEaReR" not in captured.out
+    assert "db-user:db-password" not in captured.out
+    assert "postgresql+asyncpg://" not in captured.out
+    assert "db.example/app" not in captured.out
+    assert captured.err == ""
 
 
 def test_health_openapi_advertises_problem_details(protocol_app: FastAPI) -> None:

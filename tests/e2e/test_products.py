@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, async_sessionmaker
 
 from app.core.config import Settings
 from app.core.security import hash_password
+from app.db.session import create_engine_and_sessionmaker
 from app.main import create_app
 from app.modules.products.schemas import POSTGRES_INTEGER_MAX
 from app.modules.users.models import User, UserRole
@@ -25,6 +26,7 @@ PRODUCT_BODY = {
     "stock_quantity": 7,
     "is_active": True,
 }
+PUBLIC_MAX_PRODUCT_PAGE = 10_000
 
 
 async def _login(
@@ -302,6 +304,48 @@ async def test_public_list_search_pagination_and_visibility(
     assert [item["sku"] for item in second_page.json()["data"]] == ["PYTHON-002"]
 
 
+async def test_public_list_accepts_the_maximum_page(
+    client: AsyncClient,
+) -> None:
+    boundary = await client.get(
+        "/api/v1/products",
+        params={"page": PUBLIC_MAX_PRODUCT_PAGE, "page_size": 100},
+    )
+
+    assert boundary.status_code == 200
+    assert boundary.json()["meta"]["page"] == PUBLIC_MAX_PRODUCT_PAGE
+    assert boundary.json()["data"] == []
+
+
+async def test_public_list_rejects_abusive_deep_pages(
+    test_settings: Settings,
+) -> None:
+    app = create_app(test_settings)
+    engine, session_factory = create_engine_and_sessionmaker(test_settings)
+    app.state.sessionmaker = session_factory
+    try:
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as client:
+            responses = [
+                await client.get(
+                    "/api/v1/products",
+                    params={"page": page},
+                )
+                for page in (
+                    PUBLIC_MAX_PRODUCT_PAGE + 1,
+                    9_223_372_036_854_775_808,
+                )
+            ]
+    finally:
+        await engine.dispose()
+
+    for response in responses:
+        assert response.status_code == 422
+        assert response.json()["code"] == "VALIDATION_FAILED"
+
+
 async def test_duplicate_sku_race_is_reported_as_domain_conflict(
     client: AsyncClient,
     migrated_database: AsyncEngine,
@@ -339,9 +383,14 @@ async def test_product_openapi_marks_only_writes_as_secured(
         schema = (await client.get("/openapi.json")).json()
     collection = schema["paths"]["/api/v1/products"]
     detail = schema["paths"]["/api/v1/products/{product_id}"]
+    page_parameter = next(
+        parameter for parameter in collection["get"]["parameters"] if parameter["name"] == "page"
+    )
 
     assert "security" not in collection["get"]
     assert "security" not in detail["get"]
+    assert page_parameter["schema"]["maximum"] == PUBLIC_MAX_PRODUCT_PAGE
+    assert "deep offsets" in page_parameter["description"]
     assert collection["post"]["security"] == [{"HTTPBearer": []}]
     assert detail["patch"]["security"] == [{"HTTPBearer": []}]
     assert detail["delete"]["security"] == [{"HTTPBearer": []}]

@@ -86,6 +86,10 @@ class AuthService:
 
     async def register(self, request: RegisterRequest) -> UserRead:
         email = str(request.email).strip().lower()
+        async with self._session.begin():
+            if await self._repository.get_user_by_email(email) is not None:
+                raise EmailAlreadyExistsError
+
         password_hash = await hash_password_async(request.password)
         try:
             async with self._session.begin():
@@ -183,8 +187,7 @@ class AuthService:
         token_hash = hash_refresh_token(request.refresh_token)
         async with self._session.begin():
             _, current = await self._lock_refresh_owner_and_token(token_hash)
-            if current.revoked_at is None:
-                current.revoked_at = datetime.now(UTC)
+            await self._repository.revoke_family(current.family_id, datetime.now(UTC))
         return LogoutResult()
 
     async def logout_all(self, user_id: UUID) -> LogoutResult:
