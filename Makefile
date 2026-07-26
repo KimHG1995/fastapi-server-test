@@ -29,7 +29,7 @@ openapi:
 	uv run python scripts/export_openapi.py
 
 docs-check:
-	uv run python scripts/check_docs.py
+	uv run --extra dev python scripts/check_docs.py
 
 docker-config:
 	docker compose config

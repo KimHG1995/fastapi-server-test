@@ -34,7 +34,7 @@ FastAPI, PostgreSQL, SQLAlchemy 2로 웹과 모바일 앱이 함께 사용할 RE
 | 계약과 설정 | Pydantic v2, pydantic-settings, OpenAPI |
 | 보안 | PyJWT, pwdlib, Argon2, SHA-256 Refresh Token 해시 |
 | 관찰 가능성 | structlog, `x-request-id`, RFC 9457 Problem Details |
-| 품질 | pytest, HTTPX, Testcontainers, Ruff, mypy |
+| 품질 | pytest, HTTPX, Testcontainers, Ruff, mypy, markdown-it-py |
 | 도구 | uv, Docker, Docker Compose |
 
 정확한 고정 버전은 [pyproject.toml](pyproject.toml)과 [uv.lock](uv.lock)에서
@@ -384,7 +384,7 @@ uv run pytest
 uv run ruff check .
 uv run ruff format --check .
 uv run mypy app tests
-uv run python scripts/check_docs.py
+uv run --extra dev python scripts/check_docs.py
 uv run python scripts/export_openapi.py
 ```
 
@@ -401,7 +401,10 @@ make openapi
 ```
 
 `scripts/check_docs.py`는 모든 Markdown을 UTF-8로 읽고 금지된 가운뎃점 문자와
-깨진 로컬 Markdown 링크를 검사한다.
+깨진 로컬 Markdown 링크를 검사한다. CommonMark 문법 해석에는 개발 의존성인
+markdown-it-py를 사용한다. 따라서 개발 환경을 `uv sync --extra dev` 또는
+`pip install -e '.[dev]'`로 설치한 뒤 실행한다. `make docs-check`는 필요한
+dev extra를 명시해 같은 검사를 수행한다.
 
 ## 테스트 구성
 

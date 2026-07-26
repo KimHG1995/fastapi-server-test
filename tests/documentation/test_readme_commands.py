@@ -49,12 +49,16 @@ def test_readme_covers_the_runtime_contract_and_frontend_workflow() -> None:
 
 def test_documented_commands_match_repository_entry_points() -> None:
     readme = README.read_text(encoding="utf-8")
+    makefile = (REPOSITORY_ROOT / "Makefile").read_text(encoding="utf-8")
 
     assert "uv run uvicorn app.main:create_app --factory --reload" in readme
     assert "uv run alembic upgrade head" in readme
     assert "uv run python -m app.cli create-admin" in readme
     assert "uv run python scripts/export_openapi.py" in readme
     assert "npx openapi-typescript ./openapi/openapi.json -o src/api/schema.d.ts" in readme
+    assert "markdown-it-py" in readme
+    assert "uv run --extra dev python scripts/check_docs.py" in readme
+    assert "uv run --extra dev python scripts/check_docs.py" in makefile
 
 
 def test_every_local_markdown_link_points_to_an_existing_target() -> None:
@@ -96,6 +100,7 @@ def test_documentation_checker_supports_markdown_link_forms_and_anchors(
                 "[encoded fragment](reference.md#reference%2Dheading)",
                 "![inline image](../assets/diagram(one).png)",
                 "[reference link][reference]",
+                "[collapsed reference][]",
                 "![reference image][image]",
                 "[http](http://example.com/a_(b))",
                 "[https](https://example.com)",
@@ -104,6 +109,7 @@ def test_documentation_checker_supports_markdown_link_forms_and_anchors(
                 "[ftp](ftp://example.com/file.txt)",
                 "",
                 "[reference]: reference.md#reference-heading",
+                "[collapsed reference]: reference.md#reference-heading",
                 "[image]: ../assets/diagram(one).png",
             )
         )
@@ -128,6 +134,8 @@ def test_documentation_checker_reports_missing_files_references_and_anchors(
                 "[cross anchor](target.md#missing-heading)",
                 "![missing image](missing.png)",
                 "[missing reference][unknown]",
+                "",
+                "[unknown]: missing-reference.md",
             )
         )
         + "\n",
@@ -153,3 +161,103 @@ def test_documentation_checker_returns_nonzero_for_broken_anchor(
     )
 
     assert check_docs.main(tmp_path) == 1
+
+
+def test_documentation_checker_treats_only_protocol_relative_paths_as_external(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "\n".join(
+            (
+                "# Root links",
+                "[missing root file](/missing.md)",
+                "[protocol relative](//example.com/path)",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    diagnostics = check_docs.scan_documentation(tmp_path)
+
+    assert [(item.line, item.target) for item in diagnostics] == [(2, "/missing.md")]
+
+
+def test_documentation_checker_uses_global_github_heading_collisions(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "\n".join(
+            (
+                "# Foo",
+                "# Foo-1",
+                "# Foo",
+                "[first](#foo)",
+                "[explicit suffix](#foo-1)",
+                "[second duplicate](#foo-2)",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert check_docs.scan_documentation(tmp_path) == []
+
+
+def test_documentation_checker_recognizes_setext_heading_anchors(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "Setext heading\n==============\n\n[heading](#setext-heading)\n",
+        encoding="utf-8",
+    )
+
+    assert check_docs.scan_documentation(tmp_path) == []
+
+
+def test_documentation_checker_validates_shortcut_references(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "existing.md").write_text("# Existing\n", encoding="utf-8")
+    (tmp_path / "README.md").write_text(
+        "\n".join(
+            (
+                "# Shortcut references",
+                "[valid]",
+                "[missing]",
+                "",
+                "[valid]: existing.md",
+                "[missing]: missing.md",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    diagnostics = check_docs.scan_documentation(tmp_path)
+
+    assert [(item.line, item.target) for item in diagnostics] == [(3, "missing.md")]
+
+
+def test_documentation_checker_ignores_links_inside_all_code_forms(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "README.md").write_text(
+        "\n".join(
+            (
+                "# Code examples",
+                "",
+                "    [indented](missing-indented.md)",
+                "",
+                "```markdown",
+                "[fenced](missing-fenced.md)",
+                "```",
+                "",
+                "`[inline](missing-inline.md)`",
+            )
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    assert check_docs.scan_documentation(tmp_path) == []
