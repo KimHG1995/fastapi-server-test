@@ -33,6 +33,7 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run mypy app tests scripts
       - run: uv run --extra dev python scripts/check_docs.py
+      - run: uv run pytest tests/test_quality_contract.py -q
 
   unit:
     runs-on: ubuntu-latest
