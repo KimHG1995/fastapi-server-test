@@ -1,5 +1,6 @@
-.PHONY: install run test lint format typecheck migrate create-admin openapi docs-check \
-	docker-config docker-build docker-postgres docker-migrate docker-up docker-down
+.PHONY: install run test lint format typecheck lock-check migrate create-admin openapi \
+	openapi-check docs-check verify docker-config docker-build docker-postgres \
+	docker-migrate docker-up docker-down
 
 install:
 	uv sync --extra dev
@@ -8,7 +9,7 @@ run:
 	uv run uvicorn app.main:create_app --factory --reload
 
 test:
-	uv run pytest
+	uv run pytest -q
 
 lint:
 	uv run ruff check .
@@ -17,7 +18,10 @@ format:
 	uv run ruff format --check .
 
 typecheck:
-	uv run mypy app tests
+	uv run mypy app tests scripts
+
+lock-check:
+	uv lock --check
 
 migrate:
 	uv run alembic upgrade head
@@ -28,8 +32,16 @@ create-admin:
 openapi:
 	uv run python scripts/export_openapi.py
 
+openapi-check:
+	@temporary_file="$$(mktemp)"; \
+	trap 'rm -f "$$temporary_file"' EXIT; \
+	uv run python scripts/export_openapi.py --output "$$temporary_file"; \
+	cmp -s openapi/openapi.json "$$temporary_file"
+
 docs-check:
 	uv run --extra dev python scripts/check_docs.py
+
+verify: lock-check lint format typecheck docs-check test openapi-check
 
 docker-config:
 	docker compose config

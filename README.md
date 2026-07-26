@@ -398,6 +398,7 @@ make format
 make typecheck
 make docs-check
 make openapi
+make verify
 ```
 
 `scripts/check_docs.py`는 모든 Markdown을 UTF-8로 읽고 금지된 가운뎃점 문자와
@@ -405,6 +406,20 @@ make openapi
 markdown-it-py를 사용한다. 따라서 개발 환경을 `uv sync --extra dev` 또는
 `pip install -e '.[dev]'`로 설치한 뒤 실행한다. `make docs-check`는 필요한
 dev extra를 명시해 같은 검사를 수행한다.
+
+`make verify`는 잠금 파일, Ruff 검사와 형식, mypy, 문서, 전체 pytest,
+OpenAPI 스냅샷을 한 번에 검증한다. OpenAPI 검증은 임시 파일로 명세를 내보낸
+뒤 추적 중인 `openapi/openapi.json`과 바이트 단위로 비교한다. 따라서 검증
+과정이 기존 스냅샷을 덮어써 변경을 숨기지 않는다.
+
+## 지속적 통합
+
+GitHub Actions는 Python 3.13과 고정된 uv 0.11.31 환경에서 품질 검사, 단위
+테스트, PostgreSQL 18.4 통합 테스트, HTTP E2E 테스트, Docker 이미지 빌드,
+OpenAPI drift 검사를 각각 실행한다. 통합 테스트와 E2E 테스트는 CI 서비스
+PostgreSQL에 Alembic 마이그레이션을 먼저 적용한다. 테스트 본체의
+Testcontainers PostgreSQL은 임의의 호스트 포트를 사용하므로 CI 서비스의
+5432 포트와 충돌하지 않는다.
 
 ## 테스트 구성
 
