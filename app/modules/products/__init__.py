@@ -1,0 +1,1 @@
+"""Product persistence model."""

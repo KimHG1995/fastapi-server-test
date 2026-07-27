@@ -1,0 +1,48 @@
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, EmailStr, StringConstraints, field_validator
+
+
+class RegisterRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: Annotated[str, StringConstraints(min_length=12, max_length=128)]
+    display_name: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=80),
+    ]
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def strip_email(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    email: EmailStr
+    password: Annotated[str, StringConstraints(max_length=128)]
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def strip_email(cls, value: object) -> object:
+        return value.strip() if isinstance(value, str) else value
+
+
+class RefreshTokenRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    refresh_token: Annotated[str, StringConstraints(min_length=1, max_length=512)]
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"  # noqa: S105
+    expires_in: int
+
+
+class LogoutResult(BaseModel):
+    logged_out: Literal[True] = True
