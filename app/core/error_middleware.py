@@ -29,6 +29,7 @@ class UnexpectedErrorMiddleware:
         try:
             await self.app(scope, receive, send_with_state)
         except Exception as exc:
+            if response_started:
+                raise
             response = unexpected_error_response(Request(scope, receive), exc)
-            if not response_started:
-                await response(scope, receive, send)
+            await response(scope, receive, send)
